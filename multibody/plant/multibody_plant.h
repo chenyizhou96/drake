@@ -4026,15 +4026,61 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     const geometry::ProximityProperties* prop =
         inspector.GetProximityProperties(id);
     DRAKE_DEMAND(prop != nullptr);
-    return std::pair(prop->template GetPropertyOrDefault<T>(
-                         geometry::internal::kMaterialGroup,
-                         geometry::internal::kPointStiffness,
-                         penalty_method_contact_parameters_.geometry_stiffness),
-                     prop->template GetPropertyOrDefault<T>(
-                         geometry::internal::kMaterialGroup,
-                         geometry::internal::kHcDissipation,
-                         penalty_method_contact_parameters_.dissipation));
+
+    const T stiffness = prop->template GetPropertyOrDefault<T>(
+        geometry::internal::kMaterialGroup, geometry::internal::kPointStiffness,
+        penalty_method_contact_parameters_.geometry_stiffness);
+
+    // TODO: clean this.
+    // ContactSolver uses linear model of damping.
+    T dissipation = 0;
+    if (discrete_update_manager_) {
+      // Default is: time_step().
+      const T dissipation_rate = prop->template GetPropertyOrDefault<T>(
+          geometry::internal::kMaterialGroup, "dissipation_rate", time_step());
+      dissipation = dissipation_rate * stiffness;
+    } else {
+      dissipation = prop->template GetPropertyOrDefault<T>(
+          geometry::internal::kMaterialGroup,
+          geometry::internal::kHcDissipation,
+          penalty_method_contact_parameters_.dissipation);
+    }
+    return std::pair(stiffness, dissipation);
   }
+
+  std::pair<T, T> GetHydroelasticContactParameters(
+      geometry::GeometryId id,
+      const geometry::SceneGraphInspector<T>& inspector) const {
+    if constexpr (std::is_same_v<symbolic::Expression, T>) {
+      throw std::domain_error(
+          "This method doesn't support T = symbolic::Expression.");
+    }
+
+    auto make_error_message = [&]() {
+      BodyIndex body_index = geometry_id_to_body_index_.at(id);
+      const std::string& body_name = get_body(body_index).name();
+      const std::string& geometry_name = inspector.GetName(id);
+      const std::string message =
+          "Proximity properties not assigned for geometry '" + geometry_name +
+          "' of body '" + body_name + "'.";
+      return message;
+    };
+
+    const double kInf = std::numeric_limits<double>::infinity();
+    if (const geometry::ProximityProperties* properties =
+            inspector.GetProximityProperties(id)) {
+      const T elastic_modulus =
+          properties->GetPropertyOrDefault("material", "elastic_modulus", kInf);
+      const T dissipation_rate = properties->template GetPropertyOrDefault<T>(
+          "material", "dissipation_rate", time_step());
+      DRAKE_DEMAND(elastic_modulus > 0);
+      DRAKE_DEMAND(dissipation_rate >= 0);
+      return std::pair(elastic_modulus, dissipation_rate);
+    } else {
+      throw std::runtime_error(make_error_message());
+    }
+    DRAKE_UNREACHABLE();
+  }  
 
   // Helper to acquire per-geometry Coulomb friction coefficients from
   // SceneGraph.

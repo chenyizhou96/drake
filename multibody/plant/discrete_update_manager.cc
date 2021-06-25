@@ -60,6 +60,14 @@ DiscreteUpdateManager<T>::EvalContactSolverResults(
 }
 
 template <typename T>
+void DiscreteUpdateManager<T>::AddInForcesFromInputPorts(
+    const drake::systems::Context<T>& context,
+    MultibodyForces<T>* forces) const {
+  MultibodyPlantDiscreteUpdateManagerAttorney<T>::AddInForcesFromInputPorts(
+      plant(), context, forces);
+}
+
+template <typename T>
 const internal::ContactJacobians<T>&
 DiscreteUpdateManager<T>::EvalContactJacobians(
     const systems::Context<T>& context) const {
@@ -142,6 +150,7 @@ double DiscreteUpdateManager<T>::default_contact_dissipation() const {
   return MultibodyPlantDiscreteUpdateManagerAttorney<
       T>::default_contact_dissipation(plant());
 }
+
 }  // namespace internal
 }  // namespace multibody
 }  // namespace drake

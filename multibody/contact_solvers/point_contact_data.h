@@ -19,6 +19,9 @@ class PointContactData {
  public:
   DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(PointContactData)
 
+  /// Empty problem data with zero constact points.
+  PointContactData() = default;
+
   // Specifies the set of possible discrete contacts characterized by:
   //  1. Signed distance phi0, negative when objects interpenetrate.
   //  2. Contact Jacobian s.t. contact velocity is given by vc = Jc⋅v. Refer to

@@ -13,6 +13,9 @@
 #include "drake/multibody/plant/scalar_convertible_component.h"
 #include "drake/multibody/tree/multibody_tree.h"
 #include "drake/systems/framework/context.h"
+#include "drake/multibody/plant/contact_jacobians.h"
+#include "drake/multibody/plant/coulomb_friction.h"
+#include "drake/multibody/plant/discrete_contact_pair.h"
 
 namespace drake {
 namespace multibody {
@@ -214,6 +217,9 @@ class DiscreteUpdateManager : public ScalarConvertibleComponent<T> {
   double default_contact_stiffness() const;
   double default_contact_dissipation() const;
   /* @} */
+
+  void AddInForcesFromInputPorts(const drake::systems::Context<T>& context,
+                                 MultibodyForces<T>* forces) const;
 
   /* Concrete DiscreteUpdateManagers must override these NVI Calc methods to
    provide an implementation. The output parameters are guaranteed to be

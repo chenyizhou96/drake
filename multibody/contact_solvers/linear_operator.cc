@@ -14,13 +14,23 @@ void LinearOperator<T>::DoMultiplyByTranspose(const Eigen::SparseVector<T>&,
 }
 
 template <typename T>
-void LinearOperator<T>::DoMultiplyByTranspose(const VectorX<T>&,
-                                              VectorX<T>*) const {
+void LinearOperator<T>::DoMultiplyByTranspose(
+    const Eigen::Ref<const VectorX<T>>&, VectorX<T>*) const {
   ThrowIfNotImplemented(__func__);
 }
 
 template <typename T>
 void LinearOperator<T>::DoAssembleMatrix(Eigen::SparseMatrix<T>*) const {
+  ThrowIfNotImplemented(__func__);
+}
+
+template <typename T>
+void LinearOperator<T>::DoAssembleMatrix(MatrixX<T>*) const {
+  ThrowIfNotImplemented(__func__);
+}
+
+template <typename T>
+void LinearOperator<T>::DoAssembleMatrix(BlockSparseMatrix<T>*) const {
   ThrowIfNotImplemented(__func__);
 }
 

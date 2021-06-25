@@ -28,6 +28,7 @@ drake_cc_package_library(
     name = "contact_solvers",
     visibility = ["//visibility:public"],
     deps = [
+        ":block_sparse_linear_operator",
         ":block_sparse_matrix",
         ":contact_solver",
         ":contact_solver_results",
@@ -35,7 +36,7 @@ drake_cc_package_library(
         ":linear_operator",
         ":pgs_solver",
         ":point_contact_data",
-        ":sparse_linear_operator",
+        ":sparse_linear_operator",        
         ":system_dynamics_data",
     ],
 )
@@ -48,6 +49,66 @@ drake_cc_library(
 )
 
 drake_cc_library(
+    name = "unconstrained_primal_solver",
+    srcs = ["unconstrained_primal_solver.cc"],
+    hdrs = ["unconstrained_primal_solver.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w",
+    "-O3",
+    "-ffast-math",
+    "-g"],
+    deps = [
+        ":block_sparse_matrix",
+        ":contact_solver",
+        ":convex_solver_base",
+        ":contact_solver_utils",
+        ":point_contact_data",
+        ":system_dynamics_data",
+        ":rtsafe",
+        ":timer",
+        "//common:default_scalars",
+        "//common:essential",
+        "//common/test_utilities:limit_malloc",
+        ":supernodal_solver",
+    ],
+)
+
+drake_cc_library(
+    name = "convex_solver_base",
+    srcs = ["convex_solver_base.cc"],
+    hdrs = ["convex_solver_base.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w"],
+    deps = [
+        ":block_sparse_matrix",
+        ":contact_solver",
+        ":contact_solver_utils",
+        ":point_contact_data",
+        ":system_dynamics_data",
+        ":timer",
+        "//common:default_scalars",
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
+    name = "rtsafe",
+    srcs = [],
+    hdrs = ["rtsafe.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w"],
+    deps = [
+        "//common:default_scalars",
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
+    name = "timer",
+    hdrs = ["timer.h"],
+    deps = [
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
     name = "multibody_sim_driver",
     testonly = 1,
     srcs = ["test/multibody_sim_driver.cc"],
@@ -57,6 +118,7 @@ drake_cc_library(
         "//geometry:drake_visualizer",
         "//multibody/parsing",
         "//multibody/plant",
+        "//multibody/plant:contact_results_to_lcm",
         "//systems/analysis:simulator",
         "//systems/framework:diagram",
         "//systems/framework:diagram_builder",
@@ -90,7 +152,12 @@ drake_cc_library(
     name = "linear_operator",
     srcs = ["linear_operator.cc"],
     hdrs = ["linear_operator.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w",
+    "-O3",
+    "-ffast-math",
+    "-g"],
     deps = [
+        ":block_sparse_matrix",
         "//common:default_scalars",
         "//common:essential",
     ],
@@ -125,6 +192,21 @@ drake_cc_library(
     name = "sparse_linear_operator",
     srcs = ["sparse_linear_operator.cc"],
     hdrs = ["sparse_linear_operator.h"],
+    deps = [
+        ":linear_operator",
+        "//common:default_scalars",
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
+    name = "block_sparse_linear_operator",
+    srcs = ["block_sparse_linear_operator.cc"],
+    hdrs = ["block_sparse_linear_operator.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w",
+    "-O3",
+    "-ffast-math",
+    "-g"],
     deps = [
         ":linear_operator",
         "//common:default_scalars",
@@ -183,6 +265,52 @@ drake_cc_googletest(
     name = "sparse_linear_operator_test",
     deps = [
         ":sparse_linear_operator",
+    ],
+)
+
+drake_cc_googletest(
+    name = "rtsafe_test",
+    #copts = ["--spdlog_level debug"],
+    args  = ["--spdlog_level debug"],
+    deps = [
+        ":rtsafe",
+    ],
+)
+
+
+COPTS = [
+    "-O3",
+    "-ffast-math",
+    "-g",
+    "-fno-omit-frame-pointer"
+]
+
+drake_cc_library(
+    name = "supernodal_solver",
+    srcs = ["supernodal_solver.cc"],
+    hdrs = ["supernodal_solver.h"],
+    copts = COPTS,
+    deps = [
+        "@conex//conex:supernodal_solver",
+    ],
+)
+
+drake_cc_googletest(
+    name = "supernodal_solver_test",
+    srcs = ["test/supernodal_solver_test.cc"],
+    deps = [
+        "supernodal_solver",
+        "@conex//conex:supernodal_solver",
+    ],
+)
+
+cc_binary(
+    name = "supernodal_solver_profile",
+    srcs = ["test/supernodal_solver_profile.cc"],
+    copts = COPTS,
+    deps = [
+        "supernodal_solver",
+        "@conex//conex:supernodal_solver",
     ],
 )
 

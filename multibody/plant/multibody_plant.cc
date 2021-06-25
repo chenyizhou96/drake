@@ -1919,6 +1919,38 @@ MultibodyPlant<T>::CalcDiscreteContactPairs(
   // If the semantics of scalar_predicate changes (or Drake types change), this
   // test may have to be revisited.
   if constexpr (scalar_predicate<T>::is_bool) {
+    auto combine_stiffness = [](const T& k1, const T& k2) {
+      const double kInf = std::numeric_limits<double>::infinity();
+      DRAKE_DEMAND(k1 > 0);
+      DRAKE_DEMAND(k2 > 0);
+      if (k1 == kInf) return k2;
+      if (k2 == kInf) return k1;
+      return k1 * k2 / (k1 + k2);
+    };
+    auto combine_contact_parameters = [combine_stiffness](
+                                          const T& k1, const T& k2, const T& d1,
+                                          const T& d2) -> std::pair<T, T> {
+      const double kInf = std::numeric_limits<double>::infinity();
+      DRAKE_DEMAND(k1 > 0);
+      DRAKE_DEMAND(k2 > 0);
+      DRAKE_DEMAND(d1 >= 0);
+      DRAKE_DEMAND(d2 >= 0);
+      const T k = combine_stiffness(k1, k2);
+
+      // Both bodies are rigid. We simply return the arithmetic average.
+      if (k == kInf) {
+        const T d = 0.5 * (d1 + d2);
+        return std::pair(k, d);
+      }
+
+      // At least one body is soft.
+      T d = 0;
+      if (k1 != kInf) d += k / k1 * d1;
+      if (k2 != kInf) d += k / k2 * d2;
+
+      return std::pair(k, d);
+    };
+
     // We first compute the number of contact pairs so that we can allocate all
     // memory at once.
     // N.B. num_point_pairs = 0 when:
@@ -1979,9 +2011,22 @@ MultibodyPlant<T>::CalcDiscreteContactPairs(
       for (const auto& s : surfaces) {
         const geometry::SurfaceMesh<T>& mesh_W = s.mesh_W();
 
-        // Combined Hunt & Crossley dissipation.
-        const T dissipation = hydroelastics_engine_.CalcCombinedDissipation(
-            s.id_M(), s.id_N(), inspector);
+        T dissipation_or_tau = 0;
+        if (discrete_update_manager_) {
+          const auto [E_M, tau_M] =
+              GetHydroelasticContactParameters(s.id_M(), inspector);
+          const auto [E_N, tau_N] =
+              GetHydroelasticContactParameters(s.id_N(), inspector);
+          // N.B. Here I define the combined dissipation rate using the same
+          // combination rule used for dissipation.
+          T E;  // unused.
+          std::tie(E, dissipation_or_tau) =
+              combine_contact_parameters(E_M, E_N, tau_M, tau_N);
+        } else {
+          // Combined Hunt & Crossley dissipation.
+          dissipation_or_tau = hydroelastics_engine_.CalcCombinedDissipation(
+              s.id_M(), s.id_N(), inspector);
+        }
 
         for (geometry::SurfaceFaceIndex face(0); face < mesh_W.num_faces();
              ++face) {
@@ -2080,14 +2125,23 @@ MultibodyPlant<T>::CalcDiscreteContactPairs(
               const Vector3<T> p_WQ =
                   mesh_W.CalcCartesianFromBarycentric(face, barycentric);
 
+              // phi < 0 when in penetration.
+              const T phi0 = -sign * p0 / grad_pres_W.dot(nhat_W);
+
               // N.B. Today 01/25/2021, Only TAMSI supports discrete
               // hydroelastics and uses the discrete force fn0 instead of the
               // distance function phi0. phi0 is only used in experimental
               // ContactSolver(s). Therefore we set phi0 to NaN since it is not
               // used by TAMSI.
-              const T nan_phi0 = std::numeric_limits<double>::quiet_NaN();
-              contact_pairs.push_back({s.id_M(), s.id_N(), p_WQ, nhat_W,
-                                       nan_phi0, fn0, k, dissipation});
+              // const T nan_phi0 = std::numeric_limits<double>::quiet_NaN();
+              using std::abs;
+              if (k > 0 && abs(phi0) < 0.1) {
+                const T dissipation = discrete_update_manager_
+                                          ? dissipation_or_tau * k
+                                          : dissipation_or_tau;
+                contact_pairs.push_back({s.id_M(), s.id_N(), p_WQ, nhat_W, phi0,
+                                         fn0, k, dissipation});
+              }
             }
           }
         }
