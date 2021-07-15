@@ -108,3 +108,21 @@ order:
    -contact_jacobian_time: Sparse contact Jacobian. -contact_solver_time: the
    actual contact solver time. -pack_results_time: packing contact results for
    reporting.
+
+# Stack of Objects
+
+To run the default configuration you can simply do (don't forget to start the
+visualizer before running the simulation):
+```
+bazel run examples/multibody/mp_convex_solver:stack_of_objects
+```
+
+To run with specific options, compile and run with:
+```
+bazel run -j 4 --config gurobi examples/multibody/mp_convex_solver:stack_of_objects -- --objects_per_pile=5 --simulator_target_realtime_rate=0.5 --scale_factor 2  --enable_box_box_collision=false --emulate_box_multicontact=1 --visualize_forces=1 --num_spheres_per_face=3 --object_type=1  --random_rotation=0 --mbp_time_step=3.2e-5 --stiffness=5e7
+
+Most of the options are the same as those in clutter. Some new options are:
+- `object_type`: 0 for spheres, 1 for boxes, 2 for alternating spheres and boxes. 
+- `random_rotation`: true to add random rotation to the objects (not recommended for boxes)
+- `radius0`: radius/half side length of the smallest sphere/box
+
