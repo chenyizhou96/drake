@@ -73,6 +73,30 @@ drake_cc_library(
 )
 
 drake_cc_library(
+    name = "admm_solver",
+    srcs = ["admm_solver.cc"],
+    hdrs = ["admm_solver.h"],
+    copts = ["-Wno-error=unused-parameter", "-Wno-error=unused-variable", "-w",
+    "-O3",
+    "-ffast-math",
+    "-g"],
+    deps = [
+        ":block_sparse_matrix",
+        ":contact_solver",
+        ":convex_solver_base",
+        ":contact_solver_utils",
+        ":point_contact_data",
+        ":system_dynamics_data",
+        ":rtsafe",
+        ":timer",
+        "//common:default_scalars",
+        "//common:essential",
+        "//common/test_utilities:limit_malloc",
+        ":supernodal_solver",
+    ],
+)
+
+drake_cc_library(
     name = "convex_solver_base",
     srcs = ["convex_solver_base.cc"],
     hdrs = ["convex_solver_base.h"],
