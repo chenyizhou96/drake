@@ -33,9 +33,9 @@ using Eigen::VectorXd;
 using Eigen::SparseMatrix;
 using Eigen::SparseVector;
 
-int admm_total_solver_iterations = -1;
+/*int admm_total_solver_iterations = -1;
 int admm_instance = 0;
-double admm_error = 0;
+double admm_error = 0;*/
 template <typename T>
 AdmmSolver<T>::AdmmSolver()
     : ConvexSolverBase<T>({AdmmSolverParameters().Rt_factor}) {}

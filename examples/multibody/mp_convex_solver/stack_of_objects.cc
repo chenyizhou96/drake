@@ -498,6 +498,7 @@ int do_main() {
         std::make_unique<CompliantContactComputationManager<double>>();
     manager = owned_manager.get();
     plant.SetDiscreteUpdateManager(std::move(owned_manager));
+    manager->set_contact_solver(std::make_unique<AdmmSolver<double>>());
     admm_solver =
         &manager->mutable_contact_solver<AdmmSolver>();
 
@@ -574,7 +575,12 @@ int do_main() {
 
   if (manager) {
     manager->LogStats("manager_log.dat");
-    primal_solver->LogIterationsHistory("log.dat");
+    if (primal_solver){
+      primal_solver->LogIterationsHistory("log.dat");
+    }
+    if (admm_solver) {
+      admm_solver->LogIterationsHistory("log.dat");
+    }
     // primal_solver->LogSolutionHistory("sol_hist.dat");
   }
 
