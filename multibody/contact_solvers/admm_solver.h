@@ -202,6 +202,11 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
   void LogSolutionHistory(const std::string& file_name) const;
 
+  void TestCalcStarAnalyticalInverseDynamicsHelper(
+      const T& soft_norm_tolerance, const VectorX<T>& mu, 
+      const VectorX<T>& D, const VectorX<T>& vc, 
+      const LinearOperator<T>& Jc, VectorX<T>* gamma);
+
  private:
   // This is not a real cache in the CS sense (i.e. there is no tracking of
   // dependencies nor automatic validity check) but in the sense that this
@@ -228,6 +233,7 @@ class AdmmSolver final : public ConvexSolverBase<T> {
       dgamma_dy.resize(nc);
       // N.B. The supernodal solver needs MatrixX instead of Matrix3.
       G.resize(nc, Matrix3<T>::Zero());
+      D.resize(nc3);
     }
 
     void mark_invalid() {
@@ -254,6 +260,7 @@ class AdmmSolver final : public ConvexSolverBase<T> {
     std::vector<MatrixX<T>> G;          // G = -∂γ/∂vc.
     VectorX<T> ell_grad_v;              // Gradient of the cost in v.
     VectorX<int> regions;
+    VectorX<T> D;              //scaling factor wit unit 1/kg
 
     // TODO: needed?
     VectorX<T> ellR_grad_y;                  // Gradient of regularizer in y.

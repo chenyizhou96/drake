@@ -117,6 +117,9 @@ class ConvexSolverBase : public ContactSolver<T> {
       std::vector<Matrix3<T>>* dgamma_dy = nullptr,
       VectorX<int>* regions = nullptr) const;
 
+  void CalcStarAnalyticalInverseDynamics(
+      double soft_norm_tolerance, const VectorX<T>& vc, const VectorX<T>& D, VectorX<T>* gamma) const;
+
   bool CheckConvergenceCriteria(const VectorX<T>& vc, const VectorX<T>& dvc,
                                 double abs_tolerance,
                                 double rel_tolerance) const;

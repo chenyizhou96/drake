@@ -81,6 +81,7 @@ drake_cc_library(
     "-ffast-math",
     "-g"],
     deps = [
+	":block_sparse_linear_operator",
         ":block_sparse_matrix",
         ":contact_solver",
         ":convex_solver_base",
@@ -245,6 +246,15 @@ drake_cc_library(
     deps = [
         ":linear_operator",
         "//common:default_scalars",
+    ],
+)
+
+drake_cc_googletest(
+    name = "admm_solver_test",
+    deps = [
+        ":admm_solver",
+        ":block_sparse_linear_operator",
+        "//common/test_utilities:eigen_matrix_compare",
     ],
 )
 

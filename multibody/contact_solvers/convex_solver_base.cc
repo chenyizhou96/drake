@@ -167,6 +167,10 @@ template <typename T>
 void ConvexSolverBase<T>::CalcAnalyticalInverseDynamics(
     double soft_norm_tolerance, const VectorX<T>& vc, VectorX<T>* gamma,
     std::vector<Matrix3<T>>* dgamma_dy, VectorX<int>* regions) const {
+    //eg.vc input gamma is output,
+    // VectorX<double> gamma;
+
+    // CalcAnalyticalInverseDynamics(soft_tol, vc, &gamma, &dgamma_dy, &regions); dgamma_dy and regions are not needed 
   const int nc = data_.nc;
   const int nc3 = 3 * nc;
   DRAKE_DEMAND(vc.size() == nc3);
@@ -205,6 +209,53 @@ void ConvexSolverBase<T>::CalcAnalyticalInverseDynamics(
       gamma_ic =
           CalcProjection({mu, Rt, Rn}, y_ic, yr, yn, that, &region_ic);
     }
+  }
+}
+
+
+//IMPORTANT: this function does projection with D norm, if want to use R norm just pass in R into the D argument 
+template <typename T>
+void ConvexSolverBase<T>::CalcStarAnalyticalInverseDynamics(
+    double soft_norm_tolerance, const VectorX<T>& vc, const VectorX<T>& D, VectorX<T>* gamma)const {
+    //eg.vc input gamma is output,
+    // VectorX<double> gamma;
+
+    // CalcAnalyticalInverseDynamics(soft_tol, vc, &gamma, &dgamma_dy, &regions); dgamma_dy and regions are not needed 
+  const int nc = data_.nc;
+  const int nc3 = 3 * nc;
+  DRAKE_DEMAND(vc.size() == nc3);
+  DRAKE_DEMAND(gamma->size() == nc3);
+  DRAKE_DEMAND(D.size() == nc3);
+
+  // Pre-processed data.
+  const auto& R = data_.R;
+  const auto& vc_stab = data_.vc_stab;
+
+  // Problem data.
+  const auto& mu_all = data_.contact_data->get_mu();
+
+
+  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+    const auto& vc_ic = vc.template segment<3>(ic3);
+    const auto& vc_stab_ic = vc_stab.template segment<3>(ic3);
+    const auto& R_ic = R.template segment<3>(ic3);
+    const auto& D_ic = D.template segment<3>(ic3);
+    const T& mu = mu_all(ic);
+    const T& mustar = 1/mu;
+    const T& Rt = R_ic(0);
+    const T& Rn = R_ic(2);
+
+    //TODO: change expression for y here, need to be consistent with gtilda+utilda in admm
+    const Vector3<T> y_ic = vc_ic.array();
+    const auto yt = y_ic.template head<2>();
+    const T yr = SoftNorm(yt, soft_norm_tolerance);
+    const T yn = y_ic[2];
+    const Vector2<T> that = yt / yr;
+    int* dummy_region = new int(-1);
+
+    // Analytical projection of y onto the friction cone ℱ^* using the D^{-1} norm.
+    auto gamma_ic = gamma->template segment<3>(ic3);
+    gamma_ic = CalcProjection({mustar, 1/D_ic(0), 1/D_ic(2)}, y_ic, yr, yn, that, dummy_region);
   }
 }
 

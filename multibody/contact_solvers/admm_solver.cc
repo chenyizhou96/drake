@@ -13,6 +13,7 @@
 
 #include "drake/common/test_utilities/limit_malloc.h"
 #include "drake/multibody/contact_solvers/contact_solver_utils.h"
+#include "drake/multibody/contact_solvers/block_sparse_linear_operator.h"
 #include "drake/multibody/contact_solvers/rtsafe.h"
 #include "drake/multibody/contact_solvers/supernodal_solver.h"
 #include "drake/multibody/contact_solvers/timer.h"
@@ -32,6 +33,7 @@ using Eigen::VectorXd;
 
 using Eigen::SparseMatrix;
 using Eigen::SparseVector;
+//using drake::multibody::contact_solvers::internal::BlockSparseMatrix;
 
 /*int admm_total_solver_iterations = -1;
 int admm_instance = 0;
@@ -444,6 +446,21 @@ T AdmmSolver<T>::CalcLineSearchCostAndDerivatives(
 
   return ell;
 }
+
+template <typename T> 
+void AdmmSolver<T>::TestCalcStarAnalyticalInverseDynamicsHelper(
+    const T& soft_norm_tolerance, const VectorX<T>& mu, 
+    const VectorX<T>& D, const VectorX<T>& vc, const LinearOperator<T>& Jc, 
+    VectorX<T>* gamma) {
+  VectorX<T> phi0(1), stiffness(1), dissipation(1);
+  PointContactData contact_data(&phi0, &Jc, &stiffness, &dissipation, &mu);
+  data_.contact_data = &contact_data;
+  //std::cout << "current mu:" << data_.contact_data->get_mu()(0);
+  data_.Resize(1,1);
+  this->CalcStarAnalyticalInverseDynamics(soft_norm_tolerance, vc, D, gamma);
+
+}
+
 
 template <typename T>
 int AdmmSolver<T>::CalcInexactLineSearchParameter(
