@@ -285,9 +285,8 @@ class AdmmSolver final : public ConvexSolverBase<T> {
     T d2ellM_dalpha2;  // d2ellM_dalpha2 = Δvᵀ⋅M⋅Δv
   };
 
-  // Everything in this solver is a function of the generalized velocities v.
-  // State stores generalized velocities v and cached quantities that are
-  // function of v.
+  // In the ADMM solver, my state is x = [v, sigma] and u_tilde (or y_tilde? or
+  // u?)
   class State {
    public:
     DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(State);
@@ -313,7 +312,31 @@ class AdmmSolver final : public ConvexSolverBase<T> {
     Cache& mutable_cache() const { return cache_; }
 
    private:
-    VectorX<T> v_;
+    //   Note: If I somewhere needed z = this->CalcZ(State s) {
+    //       return Proj(J*s.v - vhat + R*s.sigma-s.u);
+    //   }
+    // Side note that has nothing to do with State:
+    //  z = P(g(x) + u) = function(state)
+    //  z_tilde^{k+1} = P(g_tilde^{k+1} + u_tilde^{k})
+    // In code:
+    //   * You'll have two states;
+    //       1. state (stores the most up to date k+1 iteration).
+    //       2. state_prev (stores the k iteration, or previous iteteration)
+    //   * At the begining of  the iteration: state = state_prev
+    //   * state now stores [x^k, u^k, z^k]
+    //   SolveForX(state_prev.z, state_prev.u, &state.x)
+    //   state.x = arg_min(ADMM_minimization_problem(state_prev)) // SolveForX
+    //   * State now stores [x^{k+1}, u^k, z^k]
+    //   * this->CalcG(state.x(), &state.mutable_cache().g)
+    //   * Update state.z = this->CalcZ(state.cache().g, state_prev.u());
+    //   * state.u = s.u^k + g^{k+1} - s.z
+    // Another example of Calc method:
+    // void AdmmSolver::SolveForX(
+    //   const VectorX& z, const VectorX& u, VectorX* x);
+    VectorX<T> x_;
+    VectorX<T> u_tilde_;
+    VectorX<T> z_tilde_;
+    // Cache stores all sort of quantities that are a function of the state.
     mutable Cache cache_;
   };
 

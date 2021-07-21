@@ -213,49 +213,35 @@ void ConvexSolverBase<T>::CalcAnalyticalInverseDynamics(
 }
 
 
-//IMPORTANT: this function does projection with D norm, if want to use R norm just pass in R into the D argument 
+//IMPORTANT: this function does projection with D norm, if want to use R norm just pass in R into the D argument
 template <typename T>
 void ConvexSolverBase<T>::CalcStarAnalyticalInverseDynamics(
-    double soft_norm_tolerance, const VectorX<T>& vc, const VectorX<T>& D, VectorX<T>* gamma)const {
-    //eg.vc input gamma is output,
-    // VectorX<double> gamma;
-
-    // CalcAnalyticalInverseDynamics(soft_tol, vc, &gamma, &dgamma_dy, &regions); dgamma_dy and regions are not needed 
-  const int nc = data_.nc;
+    double soft_norm_tolerance, const VectorX<T>& mu, const VectorX<T>& D,
+    const VectorX<T>& g, VectorX<T>* z) const {
+  // CalcAnalyticalInverseDynamics(soft_tol, vc, &gamma, &dgamma_dy, &regions);
+  // dgamma_dy and regions are not needed
+  const int nc = mu.size();
   const int nc3 = 3 * nc;
-  DRAKE_DEMAND(vc.size() == nc3);
-  DRAKE_DEMAND(gamma->size() == nc3);
+  DRAKE_DEMAND(g.size() == nc3);
   DRAKE_DEMAND(D.size() == nc3);
-
-  // Pre-processed data.
-  const auto& R = data_.R;
-  const auto& vc_stab = data_.vc_stab;
-
-  // Problem data.
-  const auto& mu_all = data_.contact_data->get_mu();
-
+  DRAKE_DEMAND(gamma != nullptr);
+  DRAKE_DEMAND(gamma->size() == nc3);
 
   for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
-    const auto& vc_ic = vc.template segment<3>(ic3);
-    const auto& vc_stab_ic = vc_stab.template segment<3>(ic3);
-    const auto& R_ic = R.template segment<3>(ic3);
+    const auto& g_ic = g.template segment<3>(ic3);
     const auto& D_ic = D.template segment<3>(ic3);
-    const T& mu = mu_all(ic);
-    const T& mustar = 1/mu;
-    const T& Rt = R_ic(0);
-    const T& Rn = R_ic(2);
+    const T& mu_ic = mu(ic);
+    const T& mustar = 1.0 / mu_ic;
+    const auto gt = g_ic.template head<2>();
+    const T gr = SoftNorm(gt, soft_norm_tolerance);
+    const T gn = g_ic[2];
+    const Vector2<T> that = gt / gr;
 
-    //TODO: change expression for y here, need to be consistent with gtilda+utilda in admm
-    const Vector3<T> y_ic = vc_ic.array();
-    const auto yt = y_ic.template head<2>();
-    const T yr = SoftNorm(yt, soft_norm_tolerance);
-    const T yn = y_ic[2];
-    const Vector2<T> that = yt / yr;
-    int* dummy_region = new int(-1);
-
-    // Analytical projection of y onto the friction cone ℱ^* using the D^{-1} norm.
-    auto gamma_ic = gamma->template segment<3>(ic3);
-    gamma_ic = CalcProjection({mustar, 1/D_ic(0), 1/D_ic(2)}, y_ic, yr, yn, that, dummy_region);
+    // Analytical projection of y onto the friction cone ℱ^* using the D^{-1}
+    // norm.
+    auto z_ic = z->template segment<3>(ic3);
+    z_ic = CalcProjection({mustar, 1.0 / D_ic(0), 1.0 / D_ic(2)}, g_ic, gr, gn,
+                          that, nullptr);
   }
 }
 

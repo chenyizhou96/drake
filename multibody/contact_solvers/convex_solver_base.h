@@ -117,8 +117,28 @@ class ConvexSolverBase : public ContactSolver<T> {
       std::vector<Matrix3<T>>* dgamma_dy = nullptr,
       VectorX<int>* regions = nullptr) const;
 
-  void CalcStarAnalyticalInverseDynamics(
-      double soft_norm_tolerance, const VectorX<T>& vc, const VectorX<T>& D, VectorX<T>* gamma) const;
+  // z = P(g)
+  // Where P is the projection on the dual cone defined by mu using D norm.
+  // Note: "static" in this context means the method does not need the "this"
+  // pointer.
+  static void CalcStarAnalyticalInverseDynamics(double soft_norm_tolerance,
+                                                const VectorX<T>& mu,
+                                                const VectorX<T>& D,
+                                                const VectorX<T>& g,
+                                                VectorX<T>* z) const;
+
+  // z = P(g)
+  // Where P(g) is the projection operator into the cone defined by mu using the
+  // D norm.
+  // Call site:
+  // This projects into the dual:
+  //   ProjectIntoConeWithDnorm(tolerance, 1/mu, D, g &z);  
+  // This projects into the "original" cone:
+  //   ProjectIntoConeWithDnorm(tolerance, mu, D, g &z);  
+  static void ProjectIntoConeWithDnorm(double soft_norm_tolerance,
+                                       const VectorX<T>& mu,
+                                       const VectorX<T>& D, const VectorX<T>& g,
+                                       VectorX<T>* z) const;
 
   bool CheckConvergenceCriteria(const VectorX<T>& vc, const VectorX<T>& dvc,
                                 double abs_tolerance,
@@ -160,6 +180,8 @@ class ConvexSolverBase : public ContactSolver<T> {
   PreProcessedData data_;
 
  private:
+  friend class ConvexSolverBaseTester;
+
   // Parameters that define the projection gamma = P(y) on the friction cone ℱ
   // using the R norm.
   struct ProjectionParams {
