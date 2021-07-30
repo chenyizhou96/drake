@@ -109,7 +109,7 @@ template <typename T>
 Vector3<T> ConvexSolverBase<T>::CalcProjection(
     const ProjectionParams& params, const Eigen::Ref<const Vector3<T>>& y,
     const T& yr, const T& yn, const Eigen::Ref<const Vector2<T>>& that,
-    int* region, Matrix3<T>* dPdy) const {
+    int* region, Matrix3<T>* dPdy) {
   const T& mu = params.mu;
   const T& Rt = params.Rt;
   const T& Rn = params.Rn;
@@ -118,11 +118,15 @@ Vector3<T> ConvexSolverBase<T>::CalcProjection(
   Vector3<T> gamma;
   // Analytical projection of y onto the friction cone ℱ using the R norm.
   if (yr < mu * yn) {  // Region I, stiction.
-    *region = 1;
+    if (region != nullptr){
+      *region = 1;
+    }
     gamma = y;
     if (dPdy) dPdy->setIdentity();
   } else if (-mu_hat * yr < yn && yn <= yr / mu) {  // Region II, sliding.
-    *region = 2;
+    if (region != nullptr){
+      *region = 2;
+    }
     // Common terms:
     const T mu_tilde2 = mu * mu_hat;  // mu_tilde = mu * sqrt(Rt/Rn).
     const T factor = 1.0 / (1.0 + mu_tilde2);
@@ -154,7 +158,9 @@ Vector3<T> ConvexSolverBase<T>::CalcProjection(
       (*dPdy)(2, 2) = dgn_dyn;
     }
   } else {  // yn <= -mu_hat * yr
-    *region = 3;
+    if (region != nullptr){
+      *region = 3;
+    }
     // Region III, no contact.
     gamma.setZero();
     if (dPdy) dPdy->setZero();
@@ -213,25 +219,26 @@ void ConvexSolverBase<T>::CalcAnalyticalInverseDynamics(
 }
 
 
-//IMPORTANT: this function does projection with D norm, if want to use R norm just pass in R into the D argument
+//IMPORTANT: this function does projection with cone warped by D, if want to use R norm just pass in R into the D argument
 template <typename T>
-void ConvexSolverBase<T>::CalcStarAnalyticalInverseDynamics(
-    double soft_norm_tolerance, const VectorX<T>& mu, const VectorX<T>& D,
-    const VectorX<T>& g, VectorX<T>* z) const {
+void ConvexSolverBase<T>::ProjectIntoDWarpedCone(double soft_norm_tolerance,
+    const VectorX<T>& mu, const VectorX<T>& D, const VectorX<T>& g,
+                                       VectorX<T>* z) {
+  using std::sqrt;
   // CalcAnalyticalInverseDynamics(soft_tol, vc, &gamma, &dgamma_dy, &regions);
   // dgamma_dy and regions are not needed
   const int nc = mu.size();
   const int nc3 = 3 * nc;
   DRAKE_DEMAND(g.size() == nc3);
   DRAKE_DEMAND(D.size() == nc3);
-  DRAKE_DEMAND(gamma != nullptr);
-  DRAKE_DEMAND(gamma->size() == nc3);
+  DRAKE_DEMAND(z != nullptr);
+  DRAKE_DEMAND(z->size() == nc3);
 
   for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
     const auto& g_ic = g.template segment<3>(ic3);
     const auto& D_ic = D.template segment<3>(ic3);
     const T& mu_ic = mu(ic);
-    const T& mustar = 1.0 / mu_ic;
+    const T& mutilde = mu_ic*sqrt(D_ic(2)/D_ic(0));
     const auto gt = g_ic.template head<2>();
     const T gr = SoftNorm(gt, soft_norm_tolerance);
     const T gn = g_ic[2];
@@ -240,7 +247,7 @@ void ConvexSolverBase<T>::CalcStarAnalyticalInverseDynamics(
     // Analytical projection of y onto the friction cone ℱ^* using the D^{-1}
     // norm.
     auto z_ic = z->template segment<3>(ic3);
-    z_ic = CalcProjection({mustar, 1.0 / D_ic(0), 1.0 / D_ic(2)}, g_ic, gr, gn,
+    z_ic = CalcProjection({mutilde, 1.0, 1.0}, g_ic, gr, gn,
                           that, nullptr);
   }
 }

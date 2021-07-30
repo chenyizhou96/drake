@@ -17,31 +17,12 @@ namespace contact_solvers {
 namespace internal {
 
 struct AdmmSolverParameters {
-  enum class LineSearchMethod {
-    // Inexact line search satisfying the Armijo rule.
-    kArmijo,
-    // Line search exact to machine precision.
-    kExact
-  };
 
   // We monitor convergence of the contact velocities.
-  double abs_tolerance{1.0e-6};  // m/s
+  double abs_tolerance{1.0e-7};  // m/s
   double rel_tolerance{1.0e-6};  // Unitless.
   int max_iterations{100};       // Maximum number of Newton iterations.
 
-  // Line-search parameters.
-  LineSearchMethod ls_method{LineSearchMethod::kExact};
-  double ls_alpha_max{1.5};  // Maximum line-search parameter allowed.
-  // The line search terminates if between two iterates the condition
-  // |αᵏ⁺¹−αᵏ| < ls_tolerance is satisfied.
-  // When ls_tolerance < 0 the line search is performed to machine precision.
-  double ls_tolerance{-1};
-  // Maximum number of line-search iterations. Only used for inexact methods.
-  int ls_max_iterations{40};
-
-  // Arimijo's method parameters.
-  double ls_c{1.0e-4};  // Armijo's reduction parameter.
-  double ls_rho{0.8};
 
   // Tolerance used in impulse soft norms and soft cones. In Ns.
   // TODO(amcastro-tri): Consider this to have units of N and scale by time
@@ -50,6 +31,19 @@ struct AdmmSolverParameters {
 
   // Tangential regularization factor. We make Rt = Rt_factor * Rn.
   double Rt_factor{1.0e-3};
+
+  //scaling factor for the augmented lagrangian, 
+  //maybe move to another place?
+  double rho{1};
+  double rho_factor{2.0};
+  double r_s_ratio{10.0};
+  bool rho_changed{False};
+  
+  //scaling factor matrix for admm
+  // VectorX<double> D;
+  // VectorX<double> Dinv;
+  // VectorX<double> Dinv_sqrt;
+  // VectorX<double> D_sqrt;
 
   // Use supernodal algebra for the linear solver.
   bool use_supernodal_solver{true};
@@ -70,53 +64,35 @@ struct AdmmSolverParameters {
 };
 
 struct AdmmSolverIterationMetrics {
-  // vc_max_norm_error = ‖vcᵏ⁺¹ − vcᵏ‖∞.
-  // Max norm of the contact velocity error. It is nice in that all components
-  // have the same units.
-  double vc_error_max_norm{0.0};
-
-  // Max norm of the generalized velocities error.
-  // v_max_norm_error = ‖vᵏ⁺¹ − vᵏ‖∞.
-  double v_error_max_norm{0.0};
-
-  // Max norm of the contact forces error.
-  // gamma_max_norm_error = ‖γᵏ⁺¹−γᵏ‖∞.
-  double gamma_error_max_norm{0.0};
-
-  // L2 norm of the scaled momentum equation (first optimality condition)
+  // L2 norm of the scaled momentum equation (always satisfied, good check for algorithm)
   double mom_l2{0};
-  // Max norm of the scaled momentum equation (first optimality condition)
+  // Max norm of the scaled momentum equation (always satisfied, good check for algorithm)
   double mom_max{0};
 
   double mom_rel_l2{0};
   double mom_rel_max{0};
 
-  // Optimality condition between g and gamma.
-  double opt_cond{0.0};
-
   // Some norms.
-  double vc_norm{0.0};
-  double gamma_norm{0.0};
+  //double vc_norm{0.0};
+  //double gamma_norm{0.0};
 
-  // Regularization cost ℓᵣ(v).
-  double ellR{0.0};
+  //checking whether or nor u_tilda and z_tilda are always perpendicular:
+  double u_z_product{0.0};
 
-  // Total cost ℓ(v).
-  double ell{0.0};
+  //Optimality Condition norms:
+  //r_norm = ||g-z||, 
+  //r_norm_max is max norm and .._l2 the l2 norm
+  double r_norm_max{0.0};
+  double r_norm_l2{0.0};
+  
+  //s_norm = ||R*(y+sigma)||
+  //s_norm_max is max norm and .._l2 the l2 norm 
+  double s_norm_max{0.0};
+  double s_norm_l2{0.0};
 
-  // The gradient of the cost, ∇ℓ(v).
-  double grad_ell_max_norm{0.0};
-
-  // The search direction is dv = H⁻¹∇ℓ(v).
-  double search_direction_max_norm{0.0};
-
-  // Estimation of the reverse condition number.
-  double rcond{-1};
-
-  // Line search parameter.
-  double ls_alpha;
-
-  int ls_iters{0};
+  //Another check: we should have u inside cone F, so the ratio should be
+  //less than or equal to mu
+  double u_nrratio{0.0};
 };
 
 // Intended for debugging only. Remove.
@@ -155,8 +131,6 @@ struct AdmmSolverStats {
   double assembly_time{0};
   // Time used by the underlying linear solver.
   double linear_solver_time{0};
-  // Time used in line search.
-  double line_search_time{0};
 };
 
 // This solver uses the regularized convex formulation from [Todorov 2014].
@@ -202,10 +176,6 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
   void LogSolutionHistory(const std::string& file_name) const;
 
-  void TestCalcStarAnalyticalInverseDynamicsHelper(
-      const T& soft_norm_tolerance, const VectorX<T>& mu, 
-      const VectorX<T>& D, const VectorX<T>& vc, 
-      const LinearOperator<T>& Jc, VectorX<T>* gamma);
 
  private:
   // This is not a real cache in the CS sense (i.e. there is no tracking of
@@ -218,86 +188,54 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
     Cache() = default;
 
-    void Resize(int nv, int nc, bool dense = true) {
+    void Resize(int nv, int nc) {
       const int nc3 = 3 * nc;
       vc.resize(nc3);
-      gamma.resize(nc3);
-      ellR_grad_y.resize(nc3);
-      ellR_hessian_y.resize(nc);
-      ell_grad_v.resize(nv);
-      if (dense) ell_hessian_v.resize(nv, nv);
-      dv.resize(nv);
-      dp.resize(nv);
-      dvc.resize(nc3);
-      regions.resize(nc);
-      dgamma_dy.resize(nc);
+      g.resize(nc3);
+      g_tilde.resize(nc3);
+      u.resize(nc3);
+      z.resize(nc3);
       // N.B. The supernodal solver needs MatrixX instead of Matrix3.
       G.resize(nc, Matrix3<T>::Zero());
-      D.resize(nc3);
     }
 
     void mark_invalid() {
-      valid_contact_velocity_and_impulses = false;
-      valid_cost_and_gradients = false;
-      valid_dense_gradients = false;
-      valid_search_direction = false;
-      valid_line_search_quantities = false;
+      valid_contact_velocity = false;
     }
 
     // Direct algebraic funtions of velocity.
     // CalcVelocityAndImpulses() updates these entries.
-    bool valid_contact_velocity_and_impulses{false};
+    //bool valid_contact_velocity_and_impulses{false};
     VectorX<T> vc;     // Contact velocities.
-    VectorX<T> gamma;  // Impulses.
 
-    bool valid_cost_and_gradients{false};
-    T ell;   // The total cost.
-    T ellM;  // Mass matrix cost.
-    T ellR;  // The regularizer cost.
-    // N.B. The supernodal solver consumes G as a vector MatrixX instead of
-    // Matrix3. That is why dgamma_dy uses Matrix3 and G uses MatrixX.
-    std::vector<Matrix3<T>> dgamma_dy;  // ∂γ/∂y.
-    std::vector<MatrixX<T>> G;          // G = -∂γ/∂vc.
-    VectorX<T> ell_grad_v;              // Gradient of the cost in v.
-    VectorX<int> regions;
-    VectorX<T> D;              //scaling factor wit unit 1/kg
+    VectorX<T> g; //g = J*v-vhat+R*sigma
+    VectorX<T> g_tilde;  //g_tilde = D^-0.5 g
+    VectorX<T> u;  //u = D^-0.5 u_tilde
+    VectorX<T> z;  //z = D^0.5 z_tilde
+    
+    //think about whether needed at SolveForX?
+    VectorX<T> Finv; 
+    
+    bool valid_contact_velocity{true};
 
-    // TODO: needed?
-    VectorX<T> ellR_grad_y;                  // Gradient of regularizer in y.
-    std::vector<Matrix3<T>> ellR_hessian_y;  // Hessian of regularizer in y.
+    std::vector<MatrixX<T>> G;  //G = rho(D+rhoR)^-1, for building the weight in supernodal solver
 
-    // TODO: only for debugging. Remove these.
-    bool valid_dense_gradients{false};
-    MatrixX<T> ell_hessian_v;  // Hessian in v.
-
-    // Search directions are also a function of state. Gradients (i.e.
-    // valid_cost_and_gradients) must be valid in order for the computation to
-    // be correct.
-    bool valid_search_direction{false};
-    VectorX<T> dv;       // search direction.
-    VectorX<T> dvc;      // Search direction in contact velocities.
-    T condition_number;  // An estimate of the Hessian's condition number.
-
-    // One-dimensional quantities used in line-search.
-    // These depend on Δv (i.e. on valid_search_direction).
-    bool valid_line_search_quantities{false};
-    VectorX<T> dp;     // Δp = M⋅Δv
-    T d2ellM_dalpha2;  // d2ellM_dalpha2 = Δvᵀ⋅M⋅Δv
   };
 
-  // In the ADMM solver, my state is x = [v, sigma] and u_tilde (or y_tilde? or
-  // u?)
+  // Everything in this solver is a function of the generalized velocities v.
+  // State stores generalized velocities v and cached quantities that are
+  // function of v.
   class State {
    public:
     DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(State);
 
     State() = default;
 
-    State(int nv, int nc, bool dense) { Resize(nv, nc, dense); }
+    State(int nv, int nc) { Resize(nv, nc); }
 
-    void Resize(int nv, int nc, bool dense) {
+    void Resize(int nv, int nc) {
       v_.resize(nv);
-      cache_.Resize(nv, nc, dense);
+      cache_.Resize(nv, nc);
     }
 
     const VectorX<T>& v() const { return v_; }
@@ -308,87 +246,78 @@ class AdmmSolver final : public ConvexSolverBase<T> {
       return v_;
     }
 
+    const VectorX<T>& sigma() const { return sigma_; }
+    VectorX<T>& mutable_sigma() {
+      // Mark all cache quantities as invalid since they all are a function of
+      // velocity.
+      cache_.mark_invalid();
+      return sigma_;
+    }
+
+    const VectorX<T>& u_tilde() const { return u_tilde_; }
+    VectorX<T>& mutable_u_tilde() {
+      // Mark all cache quantities as invalid since they all are a function of
+      // velocity.
+      cache_.mark_invalid();
+      return u_tilde_;
+    }
+
+    const VectorX<T>& z_tilde() const { return z_tilde_; }
+    VectorX<T>& mutable_z_tilde() {
+      // Mark all cache quantities as invalid since they all are a function of
+      // velocity.
+      cache_.mark_invalid();
+      return z_tilde_;
+    }
+
     const Cache& cache() const { return cache_; }
     Cache& mutable_cache() const { return cache_; }
 
    private:
-    //   Note: If I somewhere needed z = this->CalcZ(State s) {
-    //       return Proj(J*s.v - vhat + R*s.sigma-s.u);
-    //   }
-    // Side note that has nothing to do with State:
-    //  z = P(g(x) + u) = function(state)
-    //  z_tilde^{k+1} = P(g_tilde^{k+1} + u_tilde^{k})
-    // In code:
-    //   * You'll have two states;
-    //       1. state (stores the most up to date k+1 iteration).
-    //       2. state_prev (stores the k iteration, or previous iteteration)
-    //   * At the begining of  the iteration: state = state_prev
-    //   * state now stores [x^k, u^k, z^k]
-    //   SolveForX(state_prev.z, state_prev.u, &state.x)
-    //   state.x = arg_min(ADMM_minimization_problem(state_prev)) // SolveForX
-    //   * State now stores [x^{k+1}, u^k, z^k]
-    //   * this->CalcG(state.x(), &state.mutable_cache().g)
-    //   * Update state.z = this->CalcZ(state.cache().g, state_prev.u());
-    //   * state.u = s.u^k + g^{k+1} - s.z
-    // Another example of Calc method:
-    // void AdmmSolver::SolveForX(
-    //   const VectorX& z, const VectorX& u, VectorX* x);
-    VectorX<T> x_;
+    VectorX<T> v_;
+    VectorX<T> sigma_;
     VectorX<T> u_tilde_;
     VectorX<T> z_tilde_;
-    // Cache stores all sort of quantities that are a function of the state.
     mutable Cache cache_;
   };
 
+  //initialize scaling matrix D as approximation of diag(JM^-1 J^T)
+  void InitializeD(const int& nc,const std::vector<MatrixX<T>>& Mt, 
+                  const BlockSparseMatrix<T>& Jblock, VectorX<T>* D);
   // This is the one and only API from ContactSolver that must be implemented.
   // Refere to ContactSolverBase's documentation for details.
   ContactSolverStatus DoSolveWithGuess(
       const typename ConvexSolverBase<T>::PreProcessedData& data,
       const VectorX<T>& v_guess, ContactSolverResults<T>* result) final;
 
-  // Update:
-  //  - Contact velocities vc(v).
-  //  - Contact impulses gamma(v).
-  //  - Gradient ∂γ/∂y.
-  void CalcVelocityAndImpulses(
-      const State& state, VectorX<T>* vc, VectorX<T>* gamma,
-      std::vector<Matrix3<T>>* dgamma_dy = nullptr) const;
+  //LLT factorization for matrix M+J^T G J and initialize Finv
+  void InitializeSolveForXData(const State& s, conex::SuperNodalSolver* solver) const;
 
-  // Computes the cost ℓ(v) and gradients with respect to v.
-  // If ell_hessian_v == nullptr we skip the expensive computation of the
-  // Hessian.
-  T CalcCostAndGradients(const State& state, VectorX<T>* ell_grad_v,
-                         std::vector<MatrixX<T>>* G, T* ellM = nullptr,
-                         T* ellR = nullptr,
-                         MatrixX<T>* ell_hessian_v = nullptr) const;
+  //Solve for x = [v, sigma]:
+  //specific steps in the notes 
+  void SolveForX(const State& s, const VectorX<T>& v_star, 
+          VectorX<T>* v, VectorX<T>* sigma, conex::SuperNodalSolver* solver) const;
 
-  // Given velocities v and search direction dv stored in `state`, this method
-  // computes ℓ(α) = ℓ(v+αΔv), for a given alpha (α), and first and second
-  // derivatives dℓ/dα and d²ℓ/dα².
-  T CalcLineSearchCostAndDerivatives(
-      const State& state_v, const T& alpha, T* dell_dalpha, T* d2ell_dalpha2,
-      State* state_alpha, T* ellM = nullptr, T* dellM_dalpha = nullptr,
-      T* d2ellM_dalpha2 = nullptr, T* ellR = nullptr, T* dellR_dalpha = nullptr,
-      T* d2ellR_dalpha2 = nullptr) const;
+  //calculates g, g_tilde with x
+  //g = J*v+ R*sigma - vhat, g_tilde = D^-0.5 g
+  void CalcG(const VectorX<T>& v, const VectorX<T>& sigma, VectorX<T>* g) const;
 
-  // Given velocities v and search direction dv stored in `state` this method
-  // computes the optimum alpha (α) such that ℓ(α) = ℓ(v+αΔv) is minimum. This
-  // search is performed to machine precision to avoid having additional
-  // parameters. Convergence to machine precision only cost a couple extra
-  // iterations and therefore is well worth the price.
-  int CalcLineSearchParameter(const State& state, T* alpha) const;
 
-  // Approximation to the 1D minimization problem α = argmin ℓ(α)= ℓ(v + αΔv)
-  // over α. We define ϕ(α) = ℓ₀ + α c ℓ₀', where ℓ₀ = ℓ(0) and ℓ₀' = dℓ/dα(0).
-  // With this definition the Armijo condition reads ℓ(α) < ϕ(α).
-  // This approximate method seeks to minimize ℓ(α) over a discrete set of
-  // values given by the geometric progression αᵣ = ρʳαₘₐₓ with r an integer,
-  // 0 < ρ < 1 and αₘₐₓ the maximum value of α allowed. That is, the exact
-  // problem is replaced by
-  //   α = argmin ℓ(α)= ℓ(v + αᵣΔv)
-  //       αᵣ = ρʳαₘₐₓ
-  //       s.t. ℓ(α) < ϕ(α), Armijo's condition.
-  int CalcInexactLineSearchParameter(const State& state, T* alpha) const;
+  // Calculate z, z_tilde with g and u
+  // z_tilde = P*_{D^-1}(g_tilde^{k+1} + u_tilde^k), z = D^0.5 z_tilde 
+  void CalcZTilde(const VectorX<T>& g_tilde, const VectorX<T>& u_tilde, VectorX<T>*z_tilde) const;
+
+  //calculate r_sigma = rho*R*D^-0.5*(z_tilde+D^-0.5 vhat-u_tilde) - rho*R*u
+  void CalcRsigma(const VectorX<T>& z_tilde, const VectorX<T>& u, VectorX<T>* r_sigma) const;
+
+  //calculate rv = J^T*R^-1*r_sigma + M*v_star
+  void CalcRv(const VectorX<T>& r_sigma, const VectorX<T>& v_star, VectorX<T>* r_v) const;
+
+  //calculate G = rho(D+rhoR)^-1, used in the SetWeightMatrix of supernodal solver
+  void CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, const double& rho, std::vector<MatrixX<T>>* G) const;
+
+  bool CheckConvergenceCriteria(const VectorX<T>& g, const VectorX<T>& z, 
+                      const VectorX<T>& y, const VectorX<T>& sigma, const VectorX<T>& vc) const; 
 
   // Computes iteration metrics between iterations k and k-1 at states s_k and
   // s_kp respectively.
@@ -400,9 +329,6 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   void CallSupernodalSolver(const State& s, VectorX<T>* dv,
                             conex::SuperNodalSolver* solver);
 
-  // Solves for dv usind dense algebra, for debugging.
-  void CallDenseSolver(const State& s, VectorX<T>* dv);
-
   using ConvexSolverBase<T>::data_;
   AdmmSolverParameters parameters_;
   AdmmSolverStats stats_;
@@ -410,19 +336,10 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   std::vector<AdmmSolverStats> stats_history_;
   std::vector<AdmmSolutionData<T>> solution_history_;
 
-  struct Workspace {
-    void Resize(int nv, int nc) {
-      aux_v1.resize(nv);
-      aux_v2.resize(nv);
-    }
-    VectorX<T> aux_v1;
-    VectorX<T> aux_v2;
-  };
-  mutable Workspace workspace_;
-
-  // Auxiliary state used by CalcLineSearchParameter().
-  // TODO: either remove or make it an argument to CalcLineSearchParameter().
-  mutable State aux_state_;
+  // previous state used in DoSolveWithGuess
+  // TODO: think about whether it is really needed
+  //Yizhou: probably not needed in ADMM
+  mutable State state_prev;
 };
 
 template <>

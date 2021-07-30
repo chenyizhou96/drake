@@ -509,21 +509,13 @@ int do_main() {
     params.abs_tolerance = FLAGS_abs_tol;
     params.rel_tolerance = FLAGS_rel_tol;
     params.Rt_factor = FLAGS_rt_factor;
-    params.max_iterations = 300;
-    params.ls_alpha_max = FLAGS_ls_alpha_max;
-    // params.ls_tolerance = 1.0e-2;
+    params.max_iterations = 100;
+    params.rho = 100;
+
     params.use_supernodal_solver = FLAGS_use_supernodal;
     params.compare_with_dense = false;
     params.verbosity_level = FLAGS_verbosity_level;
     params.log_stats = true;
-    if (FLAGS_line_search == "exact") {
-      params.ls_method =
-          AdmmSolverParameters::LineSearchMethod::kExact;
-    } else {
-      params.ls_max_iterations = 100;
-      params.ls_method =
-          AdmmSolverParameters::LineSearchMethod::kArmijo;
-    }
     admm_solver->set_parameters(params);
 
   }

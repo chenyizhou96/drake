@@ -66,6 +66,10 @@ class ConvexSolverBase : public ContactSolver<T> {
       Rinv.resize(nc3);
       vc_stab.resize(nc3);
       Djac.resize(nv);
+      D.resize(nc3);
+      Dinv.resize(nc3);
+      Dinv_sqrt(nc3);
+      D_sqrt(nc3);
     }
     T time_step;
     const SystemDynamicsData<T>* dynamics_data{nullptr};
@@ -78,6 +82,11 @@ class ConvexSolverBase : public ContactSolver<T> {
     BlockSparseMatrix<T> Jblock;  // Jacobian as block-structured matrix.
     BlockSparseMatrix<T> Mblock;  // Mass mastrix as block-structured matrix.
     std::vector<MatrixX<T>> Mt;  // Per-tree diagonal blocks of the mass matrix.
+    //scaling factors for ADMM:
+    VectorX<double> D;
+    VectorX<double> Dinv;
+    VectorX<double> Dinv_sqrt;
+    VectorX<double> D_sqrt;
     // Jacobi pre-conditioner for the mass matrix.
     // Djac = diag(M)^(-0.5)
     VectorX<T> Djac;
@@ -96,8 +105,8 @@ class ConvexSolverBase : public ContactSolver<T> {
 
   // Utility to compute the "soft norm" ‖x‖ₛ defined by ‖x‖ₛ² = ‖x‖² + ε², where
   // ε = soft_tolerance.
-  T SoftNorm(const Eigen::Ref<const VectorX<T>>& x,
-             double soft_tolerance) const {
+  static T SoftNorm(const Eigen::Ref<const VectorX<T>>& x,
+             double soft_tolerance) {
     using std::sqrt;
     return sqrt(x.squaredNorm() + soft_tolerance * soft_tolerance);
   }
@@ -117,28 +126,18 @@ class ConvexSolverBase : public ContactSolver<T> {
       std::vector<Matrix3<T>>* dgamma_dy = nullptr,
       VectorX<int>* regions = nullptr) const;
 
-  // z = P(g)
-  // Where P is the projection on the dual cone defined by mu using D norm.
-  // Note: "static" in this context means the method does not need the "this"
-  // pointer.
-  static void CalcStarAnalyticalInverseDynamics(double soft_norm_tolerance,
-                                                const VectorX<T>& mu,
-                                                const VectorX<T>& D,
-                                                const VectorX<T>& g,
-                                                VectorX<T>* z) const;
-
-  // z = P(g)
-  // Where P(g) is the projection operator into the cone defined by mu using the
+  // z_tilde = P(g_tilde)
+  // Where P(g_tilde) is the projection operator into the cone defined by mu using the
   // D norm.
   // Call site:
   // This projects into the dual:
-  //   ProjectIntoConeWithDnorm(tolerance, 1/mu, D, g &z);  
+  //   ProjectIntoConeWithDnorm(tolerance, 1/mu, D, g_tilde &z_tilde);  
   // This projects into the "original" cone:
-  //   ProjectIntoConeWithDnorm(tolerance, mu, D, g &z);  
-  static void ProjectIntoConeWithDnorm(double soft_norm_tolerance,
+  //   ProjectIntoConeWithDnorm(tolerance, mu, D, g_tilde &z_tilde);  
+  static void ProjectIntoDWarpedCone(double soft_norm_tolerance,
                                        const VectorX<T>& mu,
                                        const VectorX<T>& D, const VectorX<T>& g,
-                                       VectorX<T>* z) const;
+                                       VectorX<T>* z);
 
   bool CheckConvergenceCriteria(const VectorX<T>& vc, const VectorX<T>& dvc,
                                 double abs_tolerance,
@@ -196,11 +195,11 @@ class ConvexSolverBase : public ContactSolver<T> {
   // In addition to passing y as an argument we also pass the triplet {yr,
   // yn, that}. This allow us to reuse these quantities if already computed.
   // TODO: make static?
-  Vector3<T> CalcProjection(const ProjectionParams& params,
+  static Vector3<T> CalcProjection(const ProjectionParams& params,
                             const Eigen::Ref<const Vector3<T>>& y, const T& yr,
                             const T& yn,
                             const Eigen::Ref<const Vector2<T>>& that,
-                            int* region, Matrix3<T>* dPdy = nullptr) const;
+                            int* region, Matrix3<T>* dPdy = nullptr);
 
   ConvexSolverBaseParameters parameters_;
   double pre_process_time_{0};

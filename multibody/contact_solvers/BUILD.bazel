@@ -253,6 +253,16 @@ drake_cc_googletest(
     name = "admm_solver_test",
     deps = [
         ":admm_solver",
+        ":convex_solver_base",
+        ":block_sparse_linear_operator",
+        "//common/test_utilities:eigen_matrix_compare",
+    ],
+)
+
+drake_cc_googletest(
+    name = "convex_solver_base_test",
+    deps = [
+        ":convex_solver_base",
         ":block_sparse_linear_operator",
         "//common/test_utilities:eigen_matrix_compare",
     ],
