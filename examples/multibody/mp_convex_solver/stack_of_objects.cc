@@ -35,7 +35,6 @@ namespace drake {
 namespace multibody {
 namespace examples {
 namespace mp_convex_solver {
-namespace {
 
 // Simulation parameters.
 DEFINE_double(simulation_time, 5.0, "Simulation duration in seconds");
@@ -101,6 +100,7 @@ DEFINE_int32(object_type, 1, "define object type, 0 for spheres, 1 for boxes, 2 
 DEFINE_int32(solver_type, 2, "define solver type, 0 for TAMSI, 1 for unconstrained primal solver, 2 for admm solver");
 DEFINE_double(radius0, 0.05, "radius or side length/2 for the smallest sphere/box");
 DEFINE_bool(random_rotation, false, "enable random rotation for the stacked objects");
+DEFINE_int32(max_iterations, 100, "max iterations for the admm solver, for debugging purpose");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -432,7 +432,7 @@ void SetObjectsIntoAPile(const MultibodyPlant<double>& plant,
     }
   }
 }
-
+namespace {
 int do_main() {
   // Build a generic multibody plant.
   systems::DiagramBuilder<double> builder;
@@ -509,11 +509,10 @@ int do_main() {
     params.abs_tolerance = FLAGS_abs_tol;
     params.rel_tolerance = FLAGS_rel_tol;
     params.Rt_factor = FLAGS_rt_factor;
-    params.max_iterations = 100;
-    params.rho = 100;
+    params.max_iterations = FLAGS_max_iterations;
+    params.rho = 1;
 
     params.use_supernodal_solver = FLAGS_use_supernodal;
-    params.compare_with_dense = false;
     params.verbosity_level = FLAGS_verbosity_level;
     params.log_stats = true;
     admm_solver->set_parameters(params);

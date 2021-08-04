@@ -84,14 +84,6 @@ void AdmmSolver<T>::InitializeD(const int& nc, const std::vector<MatrixX<T>>& Mt
         //PRINT_VAR(i0/3);
       }
     }
-    
-    if (parameters_.verbosity_level >= 3) {
-      PRINT_VAR(W[0]);
-      //PRINT_VAR(Jkt);
-      //PRINT_VAR(Mt[t]);
-      //PRINT_VAR(k);
-      //PRINT_VAR(t);
-    }
   }
 
   for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
@@ -150,6 +142,12 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     PRINT_VAR(data_.Jblock.rows());
     PRINT_VAR(data_.Jblock.cols());
     PRINT_VAR(data_.Jblock.num_blocks());
+    for (auto [p ,t, Jpt] : data_.Jblock.get_blocks()) {
+      PRINT_VAR(Jpt);
+    }
+    PRINT_VAR(data_.Mt[0]);
+    PRINT_VAR(data_.R);
+    //PRINT_VAR(parameters_.max_iterations);
   }
   // TODO: refactor into PrintProblemStructure().
   if (parameters_.verbosity_level >= 2) {
@@ -158,6 +156,8 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
                                Jb.rows(), Jb.cols());
     }
   }
+
+  Timer preproc_timer;
 
   State state(nv, nc);
   //aux_state_.Resize(nv, nc, parameters_.compare_with_dense);
@@ -181,7 +181,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   stats_ = {};
   stats_.num_contacts = nc;
   // Log the time it took to pre-process data.
-  stats_.preproc_time = this->pre_process_time();
+  //stats_.preproc_time = this->pre_process_time();
 
   AdmmSolverIterationMetrics metrics;
 
@@ -190,8 +190,11 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   data_.Dinv = data_.D.cwiseInverse();
   data_.Dinv_sqrt = data_.Dinv.cwiseSqrt();
   data_.D_sqrt = data_.D.cwiseSqrt();
-
+  const auto& D = data_.D;
   const auto& rho = parameters_.rho;
+  
+  //each entry of D must be positive
+  DRAKE_DEMAND(D.minCoeff() > 0);
 
   //TODO: initialize utilde, sigma...... eveyrthing here
   J.Multiply(state.v(), &cache.vc);
@@ -209,15 +212,16 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   state.mutable_z_tilde() = data_.Dinv_sqrt.cwiseProduct(z);
   state.mutable_u_tilde() = -data_.D_sqrt.cwiseProduct(state.sigma())/rho;
 
+  stats_.preproc_time += preproc_timer.Elapsed();
+
   // Super nodal solver is constructed once per time-step to reuse structure
   // of M and J.
   std::unique_ptr<conex::SuperNodalSolver> solver;
-  if (parameters_.use_supernodal_solver) {
-    Timer timer;
-    solver = std::make_unique<conex::SuperNodalSolver>(
-        data_.Jblock.block_rows(), data_.Jblock.get_blocks(), data_.Mt);
-    stats_.supernodal_construction_time = timer.Elapsed();
-  }
+  Timer construction_timer;
+  solver = std::make_unique<conex::SuperNodalSolver>(
+      data_.Jblock.block_rows(), data_.Jblock.get_blocks(), data_.Mt);
+  stats_.supernodal_construction_time = construction_timer.Elapsed();
+  
   if (parameters_.verbosity_level >=3) {
       PRINT_VAR(state.v().norm());
       PRINT_VAR(state.sigma().norm());
@@ -235,26 +239,33 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       std::cout << "Iteration: " << k << std::endl;
     }
 
-    //for debugging only, delete later:
-    //r_norm = ||g-z||
-    data_.Jblock.Multiply(state.v(), & cache.vc);
-    cache.g = cache.vc+ data_.R.cwiseProduct(state.sigma()) - data_.vc_stab;
-    cache.z = data_.D_sqrt.cwiseProduct(state.z_tilde());
-    cache.u = data_.Dinv_sqrt.cwiseProduct(state.u_tilde());
-    double r_norm = (cache.g - cache.z).norm();
-    //s_norm = ||R(y+sigma)||
-    double s_norm = R.cwiseProduct(rho*cache.u+state.sigma()).norm();
-    if (parameters_.verbosity_level >= 3){
-      PRINT_VAR(r_norm);
-      PRINT_VAR(s_norm);
-    }
+    // //for debugging only, delete later:
+    // //r_norm = ||g-z||
+    // data_.Jblock.Multiply(state.v(), & cache.vc);
+    // cache.g = cache.vc+ data_.R.cwiseProduct(state.sigma()) - data_.vc_stab;
+    // cache.z = data_.D_sqrt.cwiseProduct(state.z_tilde());
+    // cache.u = data_.Dinv_sqrt.cwiseProduct(state.u_tilde());
+    // double r_norm = (cache.g - cache.z).norm();
+    // //s_norm = ||R(y+sigma)||
+    // double s_norm = R.cwiseProduct(rho*cache.u+state.sigma()).norm();
+    // if (parameters_.verbosity_level >= 3){
+    //   PRINT_VAR(r_norm);
+    //   PRINT_VAR(s_norm);
+    // }
+    Timer local_timer;
 
+  
+    auto& rho_changed = parameters_.rho_changed;
 
-    if (k == 0 || state.cache().rho_changed){
+    local_timer.Reset();
+    if (k == 0 || rho_changed){
       this -> InitializeSolveForXData(state, solver.get());
+      rho_changed = false;
     }
     this->SolveForX(state, v_star, &state.mutable_v(), 
           &state.mutable_sigma(), solver.get());
+
+    stats_.solve_for_x_time+= local_timer.Elapsed();
 
     //debugging code, delete later:
     // VectorX<double> j(nv);
@@ -285,14 +296,16 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     }
     DRAKE_DEMAND(mom_l2 < parameters_.abs_tolerance);
     DRAKE_DEMAND(mom_max < parameters_.abs_tolerance);
+    
+    local_timer.Reset();
     // Update change in contact velocities.
     J.Multiply(state.v(), &cache.vc);
     
-    //calculate g:
+    //calculate g and g_tilde:
     CalcG(state.v(), state.sigma(), &cache.g);
     cache.g_tilde = data_.Dinv_sqrt.cwiseProduct(cache.g);
     
-    //update z:
+    //update z and z_tilde:
     CalcZTilde(const_cache.g_tilde, state.u_tilde(), &state.mutable_z_tilde());
     cache.z = data_.D_sqrt.cwiseProduct(state.z_tilde());
     
@@ -300,28 +313,73 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     state.mutable_u_tilde() += const_cache.g_tilde - state.z_tilde();
     cache.u = data_.Dinv_sqrt.cwiseProduct(state.u_tilde());
 
-    double uz_product = state.z_tilde().dot(state.u_tilde());
+    stats_.solve_for_z_u_time += local_timer.Elapsed();
     
-    if (parameters_.verbosity_level >= 3) {
-      PRINT_VAR(uz_product);
+    //test whether or not u_tilde and z_tilde are correct
+    double uz_product = state.z_tilde().dot(state.u_tilde());
+    //calculate quadratic cost l:
+    //double l = 0.5*()
+    ///((max(state.cache().vc.norm(), data_.vc_stab.norm())* max(state.cache().vc.norm(), data_.vc_stab.norm())));
+    
+    const double& abs_tol = parameters_.abs_tolerance;
+    // if (state.u_tilde().norm() > abs_tol && state.z_tilde().norm() > abs_tol) {
+    //   //uz_product = uz_product/(max(state.u_tilde().norm(), state.z_tilde().norm())* max(state.u_tilde().norm(), state.z_tilde().norm()));
+    // }
+
+
+    if (parameters_.verbosity_level > 0) {
+      VectorX<double> u_tilde_slope(nc);
+      this -> CalcSlope(state.u_tilde(), &u_tilde_slope);
+      VectorX<double> z_slope(nc);
+      this -> CalcSlope(state.cache().z, &z_slope);
+      if (state.u_tilde().norm() > 1e-8) {
+        for (int i = 0; i < nc; i++)
+          DRAKE_DEMAND(u_tilde_slope[i] < data_.contact_data->get_mu()[i]);
+      }
+      int index = -1;
+      if (state.cache().z.norm() > 1e-8) {
+        for (int i = 0; i < nc; i++)
+          if (z_slope[i] >= data_.contact_data->get_mu().cwiseInverse()[i]){
+            index = i;
+            break;
+          }
+      }
+      if (index != -1) {
+        PRINT_VAR(data_.contact_data->get_mu().cwiseInverse()[index]);
+        PRINT_VAR(z_slope[index]);
+        PRINT_VAR(state.cache().z.template segment<3>(index*3));
+      }
+      if (state.cache().z.norm() > 1e-8) {
+        for (int i = 0; i < nc; i++)
+          DRAKE_DEMAND(z_slope[i] < data_.contact_data->get_mu().cwiseInverse()[i]);
+      }
+      //PRINT_VAR(state.u_tilde());
+      //PRINT_VAR(u_tilde_slope);
     }
 
-    DRAKE_DEMAND(abs(uz_product) < 1e-12);
+    if (parameters_.verbosity_level >= 1) {
+      if (abs(uz_product) > 1e-12) {
+        PRINT_VAR(k);
+        PRINT_VAR(state.u_tilde().norm());
+        PRINT_VAR(state.z_tilde().norm());
+        PRINT_VAR(state.cache().vc.norm());
+        PRINT_VAR(data_.vc_stab.norm());
+        PRINT_VAR(state.u_tilde());
+        PRINT_VAR(state.z_tilde());
+        PRINT_VAR(uz_product);
+      }
+    }
 
+    
+    DRAKE_DEMAND(abs(uz_product) < parameters_.rel_tolerance);
+   
+    //rhis function also does dynamic rho
+    //TODO: make dynamic_rho a flag in the future and rename this function
     const bool converged =
         this -> CheckConvergenceCriteria(cache.g, cache.z, parameters_.rho*cache.u,
-                                 state.sigma(), cache.vc);
+                                 state.sigma(), cache.vc, &state.mutable_u_tilde());
     // Update iteration statistics.
-/*    metrics = CalcIterationMetrics(state, state_kp, num_ls_iters, alpha);
-    if (parameters_.log_stats) {
-      stats_.iteration_metrics.push_back(metrics);
-    }
-
-    // TODO: refactor into PrintNewtonStats().
-    if (parameters_.verbosity_level >= 3) {
-      //TODO: Think about what would be helpful here 
-      PRINT_VAR(cache.g);
-    }*/
+   //  metrics = CalcIterationMetrics(state, state_kp, num_ls_iters, alpha);
     if (parameters_.log_stats) {
       stats_.iteration_metrics.push_back(metrics);
     }
@@ -336,21 +394,19 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       }
       break;
     }
-
-    //state_kp = state;
   }
   
 
   if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
   
   //TODO: Work on all the functions here. Keep some output...... 
-  //Also check momentum equation!
+
   auto& last_metrics =
       parameters_.log_stats ? stats_.iteration_metrics.back() : metrics;
-  std::tie(last_metrics.mom_l2, last_metrics.mom_max) =
-      this->CalcScaledMomentumError(data, state.v(), state.sigma());
-  std::tie(last_metrics.mom_rel_l2, last_metrics.mom_rel_max) =
-      this->CalcRelativeMomentumError(data, state.v(), state.sigma());
+  //std::tie(last_metrics.mom_l2, last_metrics.mom_max) =
+      //this->CalcScaledMomentumError(data, state.v(), state.sigma());
+  last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
+  last_metrics.s_norm_l2 = R.cwiseProduct(rho*const_cache.u+state.sigma()).norm();
   if (!parameters_.log_stats) stats_.iteration_metrics.push_back(metrics);
   stats_.num_iters = stats_.iteration_metrics.size();
 
@@ -369,9 +425,9 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 }
 
 template <typename T>
-bool AdmmSolver<T>::CheckConvergenceCriteria(const VectorX<T>& g, 
+bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g, 
                         const VectorX<T>& z, const VectorX<T>& y, 
-                        const VectorX<T>& sigma, const VectorX<T>& vc) const{
+                        const VectorX<T>& sigma, const VectorX<T>& vc, VectorX<T>* u_tilde){
   using std::max;
 
   const double& abs_tol = parameters_.abs_tolerance;
@@ -386,27 +442,55 @@ bool AdmmSolver<T>::CheckConvergenceCriteria(const VectorX<T>& g,
   //r_norm = ||g-z||
   double r_norm = (g-z).norm();
   
-  //s_norm = ||R(y+sigma)||
+  //s_norm = ||R(rho*u+sigma)||
   double s_norm = R.cwiseProduct(y+sigma).norm();
   
   const double bound = abs_tol+rel_tol*max(vc.norm(), vc_stab.norm());
 
-
   //dynamic rho code:
-  if (r_norm > r_s_ratio* s_norm && rho < 10000) {
-    rho *= rho_factor;
-    rho_changed = True;
-  }
+  if (parameters_.dynamic_rho) {
+    if (r_norm > r_s_ratio* s_norm && rho < 10000) {
+      rho *= rho_factor;
+      *u_tilde = *u_tilde/rho_factor;
+      rho_changed = true;
+    }
 
-  if(r_norm < r_s_ratio * s_norm && rho > 1e-10) {
-    rho = rho/rho_factor;
-    rho_changed = True;
+    if(r_norm < r_s_ratio * s_norm && rho > 1e-10) {
+      rho = rho/rho_factor;
+      *u_tilde = *u_tilde * rho_factor;
+      rho_changed = true;
+    }
   }
-
   if (r_norm < bound && s_norm < bound)
     return true;
 
   return false;
+}
+
+
+template <typename T>
+void AdmmSolver<T>::CalcSlope(const VectorX<T>& u, VectorX<T>* slope) const{
+  const int& nc = data_.nc;
+  const int nc3 = 3*nc;
+  //PRINT_VAR(u);
+  //PRINT_VAR(u.size());
+  DRAKE_DEMAND(u.size() == nc3);
+  DRAKE_DEMAND ((*slope).size() == nc);
+  
+  using std::abs;
+  using std::sqrt;
+  using std::pow;
+
+  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+    const auto& u_ic = u.template segment<3>(ic3);
+    if (u_ic[2] == 0) {
+      DRAKE_DEMAND(u_ic[0]== 0);
+      DRAKE_DEMAND(u_ic[1]== 0);
+      (*slope)[ic] = 0;
+    } else{
+      (*slope)[ic] = abs(sqrt(pow(u_ic[0],2)+ pow(u_ic[1], 2))/u_ic[2]);
+    }
+  }
 }
 
 template <typename T>
@@ -567,47 +651,38 @@ void AdmmSolver<T>::LogIterationsHistory(
       this->get_stats_history();
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} "
-      "{} {} {} {}\n",
+      "{} {} {} {} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
       "num_iters",
-      // Error metrics.
-      "vc_error_max_norm", "v_error_max_norm", "gamma_error_max_norm", "mom_l2",
-      "mom_max", "mom_rel_l2", "mom_rel_max","opt_cond",
-      // Some norms. We can use them as reference scales.
-      "vc_norm", "gamma_norm",
-      // Line search metrics.
-      "total_ls_iters", "max_ls_iters", "last_alpha", "mean_alpha", "alpha_min",
-      "alpha_max",
-      // Gradient and Hessian metrics.
-      "grad_ell_max_norm", "dv_max_norm", "rcond",
-      // Timing metrics.
-      "total_time", "preproc_time", "assembly_time", "linear_solve_time",
-      "ls_time", "supernodal_construction");
+      //error metrics
+      "r norm", "s norm",
+      //time metric
+      "solve_for_x_time", "solve_for_z_u_time", "total time", "preproc time"
+      );
 
   for (const auto& s : stats_hist) {
     const auto& metrics = s.iteration_metrics.back();
     // const int iters = s.iteration_metrics.size();
     const int iters = s.num_iters;
+    // Compute some totals and averages.
 
     file << fmt::format(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} "
-        "{} {} {} {}\n",
+        "{} {} {} {} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
-        iters);
+        iters,
         // Error metrics.
-        // metrics.vc_error_max_norm, metrics.v_error_max_norm,
-        // metrics.gamma_error_max_norm, metrics.mom_l2, metrics.mom_max,
-        // metrics.mom_rel_l2, metrics.mom_rel_max, metrics.opt_cond,
-        // // Some norms.
-        // metrics.vc_norm, metrics.gamma_norm,
-        // // Timing metrics.
-        // s.total_time, s.preproc_time, s.assembly_time, s.linear_solver_time,
-        //  s.supernodal_construction_time);
+        metrics.r_norm_l2,
+        metrics.s_norm_l2,
+        //time metrics:
+        s.solve_for_x_time,
+        s.solve_for_z_u_time,
+        s.total_time, 
+        s.preproc_time
+        );
   }
   file.close();
 }

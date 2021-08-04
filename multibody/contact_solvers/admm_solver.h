@@ -19,9 +19,9 @@ namespace internal {
 struct AdmmSolverParameters {
 
   // We monitor convergence of the contact velocities.
-  double abs_tolerance{1.0e-7};  // m/s
-  double rel_tolerance{1.0e-6};  // Unitless.
-  int max_iterations{100};       // Maximum number of Newton iterations.
+  double abs_tolerance{1.0e-6};  // m/s
+  double rel_tolerance{1.0e-5};  // Unitless.
+  int max_iterations{300};       // Maximum number of Newton iterations.
 
 
   // Tolerance used in impulse soft norms and soft cones. In Ns.
@@ -34,10 +34,11 @@ struct AdmmSolverParameters {
 
   //scaling factor for the augmented lagrangian, 
   //maybe move to another place?
+  bool dynamic_rho{false};
   double rho{1};
-  double rho_factor{2.0};
+  double rho_factor{4.0};
   double r_s_ratio{10.0};
-  bool rho_changed{False};
+  bool rho_changed{false};
   
   //scaling factor matrix for admm
   // VectorX<double> D;
@@ -47,10 +48,6 @@ struct AdmmSolverParameters {
 
   // Use supernodal algebra for the linear solver.
   bool use_supernodal_solver{true};
-
-  // For debugging. Compare supernodal reconstructed Hessian with dense algebra
-  // Hessian.
-  bool compare_with_dense{false};
 
   // The verbosity level determines how much information to print into stdout.
   // These levels are additive. E.g.: level 2 also prints level 0 and 1 info.
@@ -90,9 +87,6 @@ struct AdmmSolverIterationMetrics {
   double s_norm_max{0.0};
   double s_norm_l2{0.0};
 
-  //Another check: we should have u inside cone F, so the ratio should be
-  //less than or equal to mu
-  double u_nrratio{0.0};
 };
 
 // Intended for debugging only. Remove.
@@ -116,7 +110,7 @@ struct AdmmSolutionData {
 
 struct AdmmSolverStats {
   int num_contacts{0};
-  int num_iters;  // matches iteration_metrics.size() unless we use Geodesic.
+  int num_iters;  // matches iteration_metrics.size() 
   std::vector<AdmmSolverIterationMetrics> iteration_metrics;
 
   // Performance statistics. All these times are in seconds.
@@ -128,9 +122,11 @@ struct AdmmSolverStats {
   // computing regularization parameters, etc.
   double preproc_time{0};
   // Time used to assembly the Hessian.
-  double assembly_time{0};
+  double solve_for_x_time{0};
   // Time used by the underlying linear solver.
-  double linear_solver_time{0};
+  double solve_for_z_u_time{0};
+
+  double global_time{0};
 };
 
 // This solver uses the regularized convex formulation from [Todorov 2014].
@@ -317,7 +313,12 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   void CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, const double& rho, std::vector<MatrixX<T>>* G) const;
 
   bool CheckConvergenceCriteria(const VectorX<T>& g, const VectorX<T>& z, 
-                      const VectorX<T>& y, const VectorX<T>& sigma, const VectorX<T>& vc) const; 
+                      const VectorX<T>& y, const VectorX<T>& sigma, const VectorX<T>& vc, VectorX<T>* u_tilde); 
+  
+  //calculate normal/tangential rate for utilde/ztilde, for debugging purpose only
+  //u should be of length nc3 and slope of length nc
+  //slope[i] = abs(sqrt(u[3*i]^2+ u[3*i+1])/u[3*i+2])
+  void CalcSlope(const VectorX<T>& u, VectorX<T>* slope) const;
 
   // Computes iteration metrics between iterations k and k-1 at states s_k and
   // s_kp respectively.
