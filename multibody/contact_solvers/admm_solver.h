@@ -21,9 +21,9 @@ struct AdmmSolverParameters {
   // We monitor convergence of the contact velocities.
   double abs_tolerance{1.0e-6};  // m/s
   double rel_tolerance{1.0e-5};  // Unitless.
-  int max_iterations{300};       // Maximum number of Newton iterations.
+  int max_iterations{300};       // Maximum number of iterations.
 
-
+  bool initialize_force{true}; //whether or not to analytically initialize force
   // Tolerance used in impulse soft norms and soft cones. In Ns.
   // TODO(amcastro-tri): Consider this to have units of N and scale by time
   // step.
@@ -40,12 +40,6 @@ struct AdmmSolverParameters {
   double r_s_ratio{10.0};
   bool rho_changed{false};
   
-  //scaling factor matrix for admm
-  // VectorX<double> D;
-  // VectorX<double> Dinv;
-  // VectorX<double> Dinv_sqrt;
-  // VectorX<double> D_sqrt;
-
   // Use supernodal algebra for the linear solver.
   bool use_supernodal_solver{true};
 

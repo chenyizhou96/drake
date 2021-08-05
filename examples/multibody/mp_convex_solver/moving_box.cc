@@ -11,6 +11,7 @@
 #include "drake/common/nice_type_name.h"
 #include "drake/common/temp_directory.h"
 #include "drake/geometry/drake_visualizer.h"
+#include "drake/multibody/plant/externally_applied_spatial_force.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/lcm/drake_lcm.h"
 #include "drake/math/random_rotation.h"
@@ -35,11 +36,12 @@ namespace drake {
 namespace multibody {
 namespace examples {
 namespace mp_convex_solver {
+namespace {
 
 // Simulation parameters.
 DEFINE_double(simulation_time, 5.0, "Simulation duration in seconds");
 DEFINE_double(
-    mbp_time_step, 3.2E-5,
+    mbp_time_step, 1E-2,
     "If mbp_time_step > 0, the fixed-time step period (in seconds) of discrete "
     "updates for the plant (modeled as a discrete system). "
     "If mbp_time_step = 0, the plant is modeled as a continuous system "
@@ -54,25 +56,14 @@ DEFINE_double(stiction_tolerance, 1.0E-4,
 DEFINE_double(density, 1000.0, "The density of all objects, in kg/m³.");
 DEFINE_double(friction_coefficient, 1.0,
               "All friction coefficients have this value.");
-DEFINE_double(stiffness, 5.0e7, "Point contact stiffness in N/m."); //For boxes: 1.0e8 recommended
+DEFINE_double(stiffness, 1.0E3, "Point contact stiffness in N/m."); //For boxes: 1.0e8 recommended
 DEFINE_double(dissipation_rate, 0.01, "Linear dissipation rate in seconds.");
 
 // Contact geometry parameters.
-DEFINE_bool(
-    emulate_box_multicontact, true,
-    "Emulate multicontact by adding spheres to the faces of box geometries.");
 DEFINE_int32(
     num_spheres_per_face, 3,
     "Multi-contact emulation. We place num_sphere x num_spheres_per_face on "
     "each box face, when emulate_box_multicontact = true.");
-DEFINE_bool(enable_box_box_collision, false, "Enable box vs. box contact.");
-DEFINE_bool(add_box_corners, false,
-            "Adds collision points at the corners of each box.");
-
-// Scenario parameters.
-DEFINE_int32(objects_per_pile, 5, "Number of objects per pile.");
-DEFINE_double(dz, 0.05, "Initial distance between objects in the pile.");  //default:should be the same as object height
-DEFINE_double(scale_factor, 1.0, "Multiplicative factor to generate the pile.");
 
 // Visualization.
 DEFINE_bool(visualize, true, "Whether to visualize (true) or not (false).");
@@ -85,8 +76,6 @@ DEFINE_double(viz_period, 1.0 / 60.0, "Viz period.");
 
 // Discrete contact solver.
 //DEFINE_bool(tamsi, false, "Use TAMSI (true) or new solver (false).");
-DEFINE_bool(use_supernodal, true,
-            "Use supernodal algebra (true) or dense algebra (false).");
 DEFINE_int32(verbosity_level, 0,
              "Verbosity level of the new primal solver. See "
              "UnconstrainedPrimalSolverParameters.");
@@ -96,11 +85,13 @@ DEFINE_double(ls_alpha_max, 1.5, "Maximum line search step.");
 DEFINE_double(rt_factor, 1.0e-3, "Rt_factor");
 DEFINE_double(abs_tol, 1.0e-6, "Absolute tolerance [m/s].");
 DEFINE_double(rel_tol, 1.0e-4, "Relative tolerance [-].");
-DEFINE_int32(object_type, 1, "define object type, 0 for spheres, 1 for boxes, 2 for mixed");
 DEFINE_int32(solver_type, 2, "define solver type, 0 for TAMSI, 1 for unconstrained primal solver, 2 for admm solver");
 DEFINE_double(radius0, 0.05, "radius or side length/2 for the smallest sphere/box");
-DEFINE_bool(random_rotation, false, "enable random rotation for the stacked objects");
 DEFINE_int32(max_iterations, 100, "max iterations for the admm solver, for debugging purpose");
+DEFINE_bool(initialize_force, true, "admm solver specific: whether initialize force analytically");
+DEFINE_double(input_force_x, 1.0, "defines the x direction of the external force on the box, y and z dir are 0");
+DEFINE_bool(dynamic_rho, false, "whether or not to use dynamic rho for admm solver");
+
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -126,9 +117,6 @@ using Eigen::Translation3d;
 using Eigen::Vector3d;
 using clock = std::chrono::steady_clock;
 
-// Parameters
-
-std::vector<geometry::GeometryId> box_geometry_ids;
 
 
 const RigidBody<double>& AddBox(const std::string& name,
@@ -136,7 +124,6 @@ const RigidBody<double>& AddBox(const std::string& name,
                                 double mass, double friction,
                                 const Vector4<double>& color,
                                 bool emulate_box_multicontact,
-                                bool add_box_collision,
                                 MultibodyPlant<double>* plant) {
   // Ensure the block's dimensions are mass are positive.
   const double LBx = block_dimensions.x();
@@ -171,7 +158,7 @@ const RigidBody<double>& AddBox(const std::string& name,
                     geometry::internal::kFriction,
                     CoulombFriction<double>(friction, friction));
 
-  // Box's collision geometry is a solid box.
+  //add spheres to emulate box collision:
   if (emulate_box_multicontact) {
     const Vector4<double> red(1.0, 0.0, 0.0, 1.0);
     const Vector4<double> red_50(1.0, 0.0, 0.0, 0.5);
@@ -194,7 +181,7 @@ const RigidBody<double>& AddBox(const std::string& name,
       // queries and signed distance queries are not guaranteed."
       // geometry::Ellipsoid shape(radius_x, radius_y, radius_z);
       plant->RegisterCollisionGeometry(box, X_BSpherei, shape, sphere_name,
-                                       props);
+                                        props);
       if (FLAGS_visualize_multicontact) {
         plant->RegisterVisualGeometry(box, X_BSpherei, shape, sphere_name, red);
       }
@@ -202,16 +189,14 @@ const RigidBody<double>& AddBox(const std::string& name,
 
     // Add points (zero size spheres) at the corners to avoid spurious
     // interpentrations between boxes and the sink.
-    if (FLAGS_add_box_corners) {
-      add_sphere("c1", -LBx / 2, -LBy / 2, -LBz / 2, 0);
-      add_sphere("c2", +LBx / 2, -LBy / 2, -LBz / 2, 0);
-      add_sphere("c3", -LBx / 2, +LBy / 2, -LBz / 2, 0);
-      add_sphere("c4", +LBx / 2, +LBy / 2, -LBz / 2, 0);
-      add_sphere("c5", -LBx / 2, -LBy / 2, +LBz / 2, 0);
-      add_sphere("c6", +LBx / 2, -LBy / 2, +LBz / 2, 0);
-      add_sphere("c7", -LBx / 2, +LBy / 2, +LBz / 2, 0);
-      add_sphere("c8", +LBx / 2, +LBy / 2, +LBz / 2, 0);
-    }
+    add_sphere("c1", -LBx / 2, -LBy / 2, -LBz / 2, 0);
+    add_sphere("c2", +LBx / 2, -LBy / 2, -LBz / 2, 0);
+    add_sphere("c3", -LBx / 2, +LBy / 2, -LBz / 2, 0);
+    add_sphere("c4", +LBx / 2, +LBy / 2, -LBz / 2, 0);
+    add_sphere("c5", -LBx / 2, -LBy / 2, +LBz / 2, 0);
+    add_sphere("c6", +LBx / 2, -LBy / 2, +LBz / 2, 0);
+    add_sphere("c7", -LBx / 2, +LBy / 2, +LBz / 2, 0);
+    add_sphere("c8", +LBx / 2, +LBy / 2, +LBz / 2, 0);
 
     // Make a "mesh" of non-zero radii spheres.
     for (int i = 0; i < ns; ++i) {
@@ -228,15 +213,31 @@ const RigidBody<double>& AddBox(const std::string& name,
           }
         }  // k
       }    // j
-    }      // i
-  }
+    }   // i
+  }    
 
-  if (add_box_collision) {
-    auto id = plant->RegisterCollisionGeometry(
-        box, X_BG, geometry::Box(LBx, LBy, LBz), name + "_collision", props);
-    box_geometry_ids.push_back(id);
-  }
+  auto id = plant->RegisterCollisionGeometry(
+      box, X_BG, geometry::Box(LBx, LBy, LBz), name + "_collision", props);
+  [&id] {};
+
   return box;
+}
+
+// This method fixes MultibodyPlant::get_applied_spatial_force_input_port() so
+// that a constant force `f_Bo_W` is applied on `body`, at its origin Bo. The
+// force is expressed in the world frame.
+// @pre We called Initialize().
+void FixAppliedForce(const BodyIndex& body_index, const Vector3d& f_Bo_W, 
+                  MultibodyPlant<double>* plant,systems::Context<double>* plant_context) {
+  std::vector<ExternallyAppliedSpatialForce<double>> forces(1);
+  //TODO: adjust here so that box doesn't rotate in sliding case 
+  forces[0].body_index = body_index;
+  forces[0].p_BoBq_B = Vector3d::Zero();
+  forces[0].F_Bq_W = SpatialForce<double>(Vector3d(0.0, 0.0, 0.0), f_Bo_W);
+  DRAKE_DEMAND (plant != nullptr);
+  DRAKE_DEMAND(plant_context != nullptr);
+  plant->get_applied_spatial_force_input_port().FixValue(plant_context,
+                                                          forces);
 }
 
 void AddGround(MultibodyPlant<double>* plant) {
@@ -255,7 +256,7 @@ void AddGround(MultibodyPlant<double>* plant) {
           const RigidTransformd& X_WB,
           const Vector4<double>& color) -> const RigidBody<double>& {
     const auto& wall = AddBox(name, dimensions, wall_mass, friction_coefficient,
-                              color, false, true, plant);
+                              color, false,  plant);
     plant->WeldFrames(plant->world_frame(), wall.body_frame(), X_WB);
     return wall;
   };
@@ -267,172 +268,6 @@ void AddGround(MultibodyPlant<double>* plant) {
 }
 
 
-
-const RigidBody<double>& AddSphere(const std::string& name, const double radius,
-                                   double mass, double friction,
-                                   const Vector4<double>& color,
-                                   MultibodyPlant<double>* plant) {
-  const UnitInertia<double> G_Bcm = UnitInertia<double>::SolidSphere(radius);
-  const SpatialInertia<double> M_Bcm(mass, Vector3<double>::Zero(), G_Bcm);
-
-  const RigidBody<double>& ball = plant->AddRigidBody(name, M_Bcm);
-
-  geometry::ProximityProperties props;
-  if (FLAGS_solver_type != 0 || FLAGS_mbp_time_step == 0) {
-    props.AddProperty(geometry::internal::kMaterialGroup,
-                      geometry::internal::kPointStiffness, FLAGS_stiffness);
-    props.AddProperty(geometry::internal::kMaterialGroup, "dissipation_rate",
-                      FLAGS_dissipation_rate);
-  }
-  props.AddProperty(geometry::internal::kMaterialGroup,
-                    geometry::internal::kFriction,
-                    CoulombFriction<double>(friction, friction));
-
-  // Add collision geometry.
-  const RigidTransformd X_BS = RigidTransformd::Identity();
-  plant->RegisterCollisionGeometry(ball, X_BS, geometry::Sphere(radius),
-                                   name + "_collision", props);
-
-  // Add visual geometry.
-  plant->RegisterVisualGeometry(ball, X_BS, geometry::Sphere(radius),
-                                name + "_visual", color);
-
-  // We add a few spots so that we can appreciate the sphere's
-  // rotation, colored on red, green, blue according to the body's axes.
-  const Vector4<double> red(1.0, 0.0, 0.0, 1.0);
-  const Vector4<double> green(0.0, 1.0, 0.0, 1.0);
-  const Vector4<double> blue(0.0, 0.0, 1.0, 1.0);
-  const double visual_radius = 0.2 * radius;
-  const geometry::Cylinder spot(visual_radius, visual_radius);
-  // N.B. We do not place the cylinder's cap exactly on the sphere surface to
-  // avoid visualization artifacts when the surfaces are kissing.
-  const double radial_offset = radius - 0.45 * visual_radius;
-  auto spot_pose = [](const Vector3<double>& position) {
-    // The cylinder's z-axis is defined as the normalized vector from the
-    // sphere's origin to the cylinder's center `position`.
-    const Vector3<double> axis = position.normalized();
-    return RigidTransformd(
-        Eigen::Quaterniond::FromTwoVectors(Vector3<double>::UnitZ(), axis),
-        position);
-  };
-  plant->RegisterVisualGeometry(ball, spot_pose({radial_offset, 0., 0.}), spot,
-                                name + "_x+", red);
-  plant->RegisterVisualGeometry(ball, spot_pose({-radial_offset, 0., 0.}), spot,
-                                name + "_x-", red);
-  plant->RegisterVisualGeometry(ball, spot_pose({0., radial_offset, 0.}), spot,
-                                name + "_y+", green);
-  plant->RegisterVisualGeometry(ball, spot_pose({0., -radial_offset, 0.}), spot,
-                                name + "_y-", green);
-  plant->RegisterVisualGeometry(ball, spot_pose({0., 0., radial_offset}), spot,
-                                name + "_z+", blue);
-  plant->RegisterVisualGeometry(ball, spot_pose({0., 0., -radial_offset}), spot,
-                                name + "_z-", blue);
-  return ball;
-}
-
-std::vector<BodyIndex> AddObjects(double scale_factor,
-                                  MultibodyPlant<double>* plant) {
-  const double radius0 = FLAGS_radius0;
-  const double density = FLAGS_density;  // kg/m^3.
-
-  const double friction = FLAGS_friction_coefficient;
-  const Vector4<double> orange(1.0, 0.55, 0.0, 1.0);
-  const Vector4<double> purple(204.0 / 255, 0.0, 204.0 / 255, 1.0);
-  const Vector4<double> green(0, 153.0 / 255, 0, 1.0);
-  const Vector4<double> cyan(51 / 255, 1.0, 1.0, 1.0);
-  const Vector4<double> pink(1.0, 204.0 / 255, 204.0 / 255, 1.0);
-  std::vector<Vector4<double>> colors;
-  colors.push_back(orange);
-  colors.push_back(purple);
-  colors.push_back(green);
-  colors.push_back(cyan);
-  colors.push_back(pink);
-
-  const int seed = 41;
-  std::mt19937 generator(seed);
-  std::uniform_int_distribution<int> distribution(0, 1);
-
-  auto roll_shape = [&]() { return distribution(generator); };
-
-  const int num_objects = FLAGS_objects_per_pile;
-  const int num_bodies = plant->num_bodies();
-
-  std::vector<BodyIndex> bodies;
-  for (int i = 1; i <= num_objects; ++i) {
-    const auto& color = colors[(i - 1) % colors.size()];
-    const std::string name = "object" + std::to_string(i + num_bodies);
-    double e = FLAGS_scale_factor > 0 ? i - 1 : num_objects - i;
-    double scale = std::pow(std::abs(FLAGS_scale_factor), e);
-
-    int choice = -1;
-    switch (FLAGS_object_type) {
-      case 0: 
-        choice = 0;
-        break;
-      case 1:
-        choice = 1;
-        break;
-      case 2:
-        choice = roll_shape();
-    }
-
-    if (choice == 1) {
-      const Vector3d box_size = 2 * radius0 * Vector3d::Ones() * scale;
-      const double volume = box_size(0) * box_size(1) * box_size(2);
-      const double mass = density * volume;
-      Vector4<double> color50(color);
-      color50.z() = 0.5;
-      bodies.push_back(AddBox(name, box_size, mass, friction, color50,
-                              FLAGS_emulate_box_multicontact, true, plant)
-                           .index());
-    } else {
-        const double radius = radius0 * scale;
-        const double volume = 4. / 3. * M_PI * radius * radius * radius;
-        const double mass = density * volume;
-        bodies.push_back(
-            AddSphere(name, radius, mass, friction, color, plant).index());
-    }
-    scale *= scale_factor;
-  }
-
-  return bodies;
-}
-
-void SetObjectsIntoAPile(const MultibodyPlant<double>& plant,
-                         const Vector3d& offset,
-                         const std::vector<BodyIndex>& bodies,
-                         systems::Context<double>* plant_context) {
-  double delta_z = FLAGS_dz;  // assume objects have a BB of about 10 cm.
-  
-  const int seed = 41;
-  std::mt19937 generator(seed);
-
-  int num_objects = FLAGS_objects_per_pile;
-
-  double z = 0;
-  int i = 1;
-  for (auto body_index : bodies) {
-    const auto& body = plant.get_body(body_index);
-    if (body.is_floating()) {
-      double e = FLAGS_scale_factor > 0 ? i - 1 : num_objects - i;
-      double scale = std::pow(std::abs(FLAGS_scale_factor), e);
-
-      z+= delta_z*scale;
-
-      const RotationMatrixd R_WB =
-          math::UniformlyRandomRotationMatrix<double>(&generator);
-      const Vector3d p_WB = offset + Vector3d(0.0, 0.0, z);  //set radius ...
-      if (FLAGS_random_rotation){
-        plant.SetFreeBodyPose(plant_context, body, RigidTransformd(R_WB, p_WB));
-      } else {
-        plant.SetFreeBodyPose(plant_context, body, RigidTransformd(p_WB));
-      }
-      z += delta_z * scale;
-      ++i;
-    }
-  }
-}
-namespace {
 int do_main() {
   // Build a generic multibody plant.
   systems::DiagramBuilder<double> builder;
@@ -441,17 +276,23 @@ int do_main() {
 
   AddGround(&plant);
 
-  // AddSphere("sphere", radius, mass, friction, orange, &plant);
-  auto pile1 = AddObjects(FLAGS_scale_factor, &plant);
+  // set up one box on ground:
+  const double radius0 = FLAGS_radius0;
+  const double density = FLAGS_density;  // kg/m^3.
 
-  // Only box-sphere and sphere-sphere are allowed.
-  if (!FLAGS_enable_box_box_collision) {
-    geometry::GeometrySet all_boxes(box_geometry_ids);
-    scene_graph.ExcludeCollisionsWithin(all_boxes);
-  }
+  const double friction = FLAGS_friction_coefficient;
+  //color is orange
+  const Vector4<double> orange(1.0, 0.55, 0.0, 0.5);
+  const Vector3d box_size = 2 * radius0 * Vector3d::Ones() ;
+  const double volume = box_size(0) * box_size(1) * box_size(2);
+  const double mass = density * volume;
+  auto box_index = AddBox("box", box_size, mass, friction, 
+                  orange, true,  &plant).index();
 
   plant.Finalize();
 
+
+  //solver related code:
   if (FLAGS_solver_type == 0 || FLAGS_mbp_time_step == 0) {
     plant.set_penetration_allowance(FLAGS_penetration_allowance);
     plant.set_stiction_tolerance(FLAGS_stiction_tolerance);
@@ -477,8 +318,7 @@ int do_main() {
     params.Rt_factor = FLAGS_rt_factor;
     params.max_iterations = 300;
     params.ls_alpha_max = FLAGS_ls_alpha_max;
-    // params.ls_tolerance = 1.0e-2;
-    params.use_supernodal_solver = FLAGS_use_supernodal;
+    params.use_supernodal_solver = true;
     params.compare_with_dense = false;
     params.verbosity_level = FLAGS_verbosity_level;
     params.log_stats = true;
@@ -492,7 +332,6 @@ int do_main() {
     }
     primal_solver->set_parameters(params);
   } 
-
   if (FLAGS_solver_type == 2) {
     auto owned_manager =
         std::make_unique<CompliantContactComputationManager<double>>();
@@ -502,22 +341,12 @@ int do_main() {
     admm_solver =
         &manager->mutable_contact_solver<AdmmSolver>();
 
-    // N.B. These lines to set solver parameters are only needed if you want to
-    // experiment with these values. Default values should work ok for most
-    // applications. Thus, for your general case you can omit these lines.
     AdmmSolverParameters params;
-    params.abs_tolerance = FLAGS_abs_tol;
-    params.rel_tolerance = FLAGS_rel_tol;
-    params.Rt_factor = FLAGS_rt_factor;
-    params.max_iterations = FLAGS_max_iterations;
-    params.rho = 1;
-    params.dynamic_rho = true;
-
-    params.use_supernodal_solver = FLAGS_use_supernodal;
+    params.dynamic_rho = FLAGS_dynamic_rho;
     params.verbosity_level = FLAGS_verbosity_level;
+    params.initialize_force = FLAGS_initialize_force;
     params.log_stats = true;
     admm_solver->set_parameters(params);
-
   }
 
   fmt::print("Num positions: {:d}\n", plant.num_positions());
@@ -545,9 +374,14 @@ int do_main() {
   // In the plant's default context, we assume the state of body B in world W is
   // such that X_WB is an identity transform and B's spatial velocity is zero.
   plant.SetDefaultContext(&plant_context);
-
-  SetObjectsIntoAPile(plant, Vector3d(0, 0, 0), pile1,
-                      &plant_context);
+  
+  //set initial position of the box:
+  const Vector3d p_WB (0.0, 0.0, FLAGS_radius0);  //set radius ...
+  plant.SetFreeBodyPose(&plant_context, plant.get_body(box_index), RigidTransformd(p_WB));
+  
+  //set external force on the box:
+  const Vector3d external_force (FLAGS_input_force_x, 0.0, 0.0);
+  FixAppliedForce(box_index, external_force, &plant,&plant_context);
 
   auto simulator =
       MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
@@ -573,7 +407,6 @@ int do_main() {
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
     }
-    // primal_solver->LogSolutionHistory("sol_hist.dat");
   }
 
   PrintSimulatorStatistics(*simulator);

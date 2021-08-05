@@ -205,7 +205,11 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
                                      mu, Rinv, y_tilde, 
                                       &sigma_tilde);
   //sigma = 1/sqrt(R) * sigma_tilde
-  state.mutable_sigma() = Rinv.cwiseSqrt().cwiseProduct(sigma_tilde); 
+  if (parameters_.initialize_force){
+    state.mutable_sigma() = Rinv.cwiseSqrt().cwiseProduct(sigma_tilde); 
+  } else {
+    state.mutable_sigma() = VectorX<double>::Zero(nc3);
+  }
   //z = Jv - vhat + R*sigma
   VectorX<double> z = cache.vc - vc_stab + R.cwiseProduct(state.sigma());
   //z_tilde = 1/sqrt(D) * z
