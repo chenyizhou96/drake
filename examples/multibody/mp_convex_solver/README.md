@@ -145,3 +145,8 @@ Most of the options are the same as those in stack_of_objects. Some new options 
 - `dynamic_rho`: true for using dynamic rho in admm, false otherwise, default is false
 - `solver_type` : type of the solver, 0 for tamsi, 1 for unconstrained primal, 2 for admm
 
+## Solution File
+
+The solution per time step is logged with a system's monitor and written to 
+`bazel-bin/examples/multibody/mp_convex_solver/moving_box.runfiles/drake/solution.dat`.
+You can load this file with the Matlab script `load_into_workspace.m`.

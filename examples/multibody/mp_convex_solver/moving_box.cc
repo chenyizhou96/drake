@@ -21,6 +21,8 @@
 #include "drake/multibody/contact_solvers/unconstrained_primal_solver.h"
 #include "drake/multibody/contact_solvers/admm_solver.h"
 #include "drake/multibody/plant/compliant_contact_computation_manager.h"
+#include "drake/multibody/plant/contact_results.h"
+#include "drake/multibody/plant/point_pair_contact_info.h"
 #include "drake/multibody/plant/contact_results_to_lcm.h"
 #include "drake/systems/analysis/implicit_integrator.h"
 #include "drake/systems/analysis/simulator.h"
@@ -383,21 +385,66 @@ int do_main() {
   plant.SetDefaultContext(&plant_context);
   
   //set initial position of the box:
-  const Vector3d p_WB (0.0, 0.0, FLAGS_radius0);  //set radius ...
-  plant.SetFreeBodyPose(&plant_context, plant.get_body(box_index), RigidTransformd(p_WB));
-  
-  //set external force on the box:
-  const Vector3d external_force (FLAGS_input_force_x, 0.0, 0.0);
-  FixAppliedForce(box_index, external_force, &plant,&plant_context);
+  const Vector3d p_WB0(0.0, 0.0, FLAGS_radius0);  // set radius ...
+  plant.SetFreeBodyPose(&plant_context, plant.get_body(box_index),
+                        RigidTransformd(p_WB0));
+
+  // set external force on the box:
+  const Vector3d external_force(FLAGS_input_force_x, 0.0, 0.0);
+  FixAppliedForce(box_index, external_force, &plant, &plant_context);
+
+  std::ofstream log_file("solution.dat");
+  log_file << fmt::format("time x y z roll pitch yaw fx fy fz\n");
+  const auto& body = plant.get_body(box_index);
 
   auto simulator =
       MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
+
+  simulator->set_monitor([&plant, &body, &log_file](
+                             const systems::Context<double>& root_context) {
+    const auto& context = plant.GetMyContextFromRoot(root_context);
+
+    // Pose of body B in the world frame W.
+    const math::RigidTransformd& X_WB =
+        plant.EvalBodyPoseInWorld(context, body);
+
+    // Position of body B in the world frame W.
+    const Vector3d p_WB = X_WB.translation();
+
+    // Orientation of body B in the world frame W.
+    const math::RotationMatrixd& R_WB = X_WB.rotation();
+
+    // Convert to roll-pitch-yaw for reporting.
+    const math::RollPitchYawd rpy(R_WB);
+
+    const auto& contact_results =
+        plant.get_contact_results_output_port().Eval<ContactResults<double>>(
+            context);
+
+    // Compute resultant force on body B, expressedin world frame W.
+    // NOTE: You could compute the resultant torque also since you have the
+    // point of application p_WC.
+    Vector3d f_WB = Vector3d::Zero();
+    for (int i = 0; i < contact_results.num_point_pair_contacts(); ++i) {
+      const PointPairContactInfo<double>& point_pair_info =
+          contact_results.point_pair_contact_info(i);
+      f_WB += point_pair_info.contact_force();
+    }
+
+    log_file << fmt::format("{} {} {} {} {} {} {} {} {} {}\n",
+                            context.get_time(), p_WB.x(), p_WB.y(), p_WB.z(),
+                            rpy.roll_angle(), rpy.pitch_angle(),
+                            rpy.yaw_angle(), f_WB.x(), f_WB.y(), f_WB.z());
+
+    return systems::EventStatus::Succeeded();
+  });
 
   clock::time_point sim_start_time = clock::now();
   CALLGRIND_START_INSTRUMENTATION;
   simulator->AdvanceTo(FLAGS_simulation_time);
   CALLGRIND_STOP_INSTRUMENTATION;
   clock::time_point sim_end_time = clock::now();
+  log_file.close();
   const double sim_time =
       std::chrono::duration<double>(sim_end_time - sim_start_time).count();
   std::cout << "AdvanceTo() time [sec]: " << sim_time << std::endl;
