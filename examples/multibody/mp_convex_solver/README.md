@@ -126,3 +126,22 @@ Most of the options are the same as those in clutter. Some new options are:
 - `random_rotation`: true to add random rotation to the objects (not recommended for boxes)
 - `radius0`: radius/half side length of the smallest sphere/box
 
+# Moving Box
+
+To run the default configuration you can simply do (don't forget to start the
+visualizer before running the simulation):
+```
+bazel run examples/multibody/mp_convex_solver:moving_box
+```
+
+To run with specific options, compile and run with:
+```
+bazel run examples/multibody/mp_convex_solver:moving_box -- --simulator_target_realtime_rate=1  --visualize_forces=1 --num_spheres_per_face=3  --mbp_time_step=0.01 --stiffness=1000 --solver_type=2 --verbosity_level=0 --max_iterations=300 --rel_tol=1e-5 --abs_tol=1e-6 --input_force_x=3 
+```
+Most of the options are the same as those in stack_of_objects. Some new options are:
+- `input_force_x`: set x direction of the horizontal force, y and z direction are 0.  
+- `radius0`: half side length of box
+- `density`: sets density of the box
+- `dynamic_rho`: true for using dynamic rho in admm, false otherwise, default is false
+- `solver_type` : type of the solver, 0 for tamsi, 1 for unconstrained primal, 2 for admm
+
