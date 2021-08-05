@@ -63,6 +63,13 @@ struct AdmmSolverIterationMetrics {
   double mom_rel_l2{0};
   double mom_rel_max{0};
 
+  //values for sigma:
+  double sigma_x_sum{0.0};
+  double sigma_y_sum{0.0};
+  double sigma_z_sum{0.0};
+
+  double rho{0.0};
+
   // Some norms.
   //double vc_norm{0.0};
   //double gamma_norm{0.0};
@@ -163,6 +170,8 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   double get_total_time() const { return total_time_; }
 
   void LogIterationsHistory(const std::string& file_name) const;
+
+  void LogFailureData(const std::string& file_name) const;
 
   void LogSolutionHistory(const std::string& file_name) const;
 

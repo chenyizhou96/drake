@@ -376,17 +376,18 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 
     
     DRAKE_DEMAND(abs(uz_product) < parameters_.rel_tolerance);
+
+    // Update iteration statistics.
+   //  metrics = CalcIterationMetrics(state, state_kp, num_ls_iters, alpha);
+    if (parameters_.log_stats) {
+      stats_.iteration_metrics.push_back(metrics);
+    }
    
     //rhis function also does dynamic rho
     //TODO: make dynamic_rho a flag in the future and rename this function
     const bool converged =
         this -> CheckConvergenceCriteria(cache.g, cache.z, parameters_.rho*cache.u,
                                  state.sigma(), cache.vc, &state.mutable_u_tilde());
-    // Update iteration statistics.
-   //  metrics = CalcIterationMetrics(state, state_kp, num_ls_iters, alpha);
-    if (parameters_.log_stats) {
-      stats_.iteration_metrics.push_back(metrics);
-    }
 
     if (converged) {
       // TODO: refactor into PrintConvergedIterationStats().
@@ -399,11 +400,12 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       break;
     }
   }
-  
 
-  if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
   
   //TODO: Work on all the functions here. Keep some output...... 
+  // if (parameters_.verbosity_level >= 1) {
+  //   PRINT_VAR(state.sigma());
+  // }
 
   auto& last_metrics =
       parameters_.log_stats ? stats_.iteration_metrics.back() : metrics;
@@ -411,6 +413,16 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       //this->CalcScaledMomentumError(data, state.v(), state.sigma());
   last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
   last_metrics.s_norm_l2 = R.cwiseProduct(rho*const_cache.u+state.sigma()).norm();
+  last_metrics.rho = parameters_.rho;
+  //move this to a separate function?
+  const auto& sigma = state.sigma();
+  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+    const auto& sigma_ic = sigma.template segment<3>(ic3);
+    last_metrics.sigma_x_sum += sigma_ic[0];
+    last_metrics.sigma_y_sum += sigma_ic[1];
+    last_metrics.sigma_z_sum += sigma_ic[2];
+  }
+
   if (!parameters_.log_stats) stats_.iteration_metrics.push_back(metrics);
   stats_.num_iters = stats_.iteration_metrics.size();
 
@@ -424,6 +436,13 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   stats_history_.push_back(stats_);
 
   total_time_ += global_timer.Elapsed();
+
+  if (k == parameters_.max_iterations) {
+    this -> LogFailureData("failure_log.dat");
+  }
+  
+
+  if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
 
   return ContactSolverStatus::kSuccess;
 }
@@ -450,6 +469,11 @@ bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g,
   double s_norm = R.cwiseProduct(y+sigma).norm();
   
   const double bound = abs_tol+rel_tol*max(vc.norm(), vc_stab.norm());
+
+  if (parameters_.log_stats) {
+    stats_.iteration_metrics.back().r_norm_l2 = r_norm;
+    stats_.iteration_metrics.back().s_norm_l2 = s_norm;
+  }
 
   //dynamic rho code:
   if (parameters_.dynamic_rho) {
@@ -564,7 +588,7 @@ void AdmmSolver<T>::SolveForX(const State& s, const VectorX<T>& v_star,
   
   // Print stuff for debugging.
   // TODO: refactor into PrintProblemSize().
-  if (parameters_.verbosity_level >= 1) {
+  if (parameters_.verbosity_level >= 3) {
     PRINT_VAR(nv);
     PRINT_VAR(nc);
     PRINT_VAR(r_sigma.size());
@@ -647,6 +671,29 @@ AdmmSolver<T>::CalcIterationMetrics(const State& s,
 
 
 
+template <typename T>
+void AdmmSolver<T>::LogFailureData(
+    const std::string& file_name) const {
+  const std::vector<AdmmSolverStats>& stats_hist =this->get_stats_history();
+  const auto& stats = stats_hist.back();
+  std::ofstream file(file_name);
+  file << fmt::format(
+      "{} {}\n",
+      //error metrics
+      "r_norm", "s_norm"
+      );
+  for (const auto& metrics:stats.iteration_metrics) {
+    file << fmt::format(
+    "{} {}\n",
+    // Error metrics.
+    metrics.r_norm_l2,
+    metrics.s_norm_l2
+    );
+  }
+  file.close();
+}
+
+
 
 template <typename T>
 void AdmmSolver<T>::LogIterationsHistory(
@@ -655,15 +702,19 @@ void AdmmSolver<T>::LogIterationsHistory(
       this->get_stats_history();
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
       "num_iters",
+      //force output related:
+      "sigma_x_sum", "sigma_y_sum", "sigma_z_sum",
+      //parameters
+      "rho",
       //error metrics
-      "r norm", "s norm",
+      "r_norm", "s_norm",
       //time metric
-      "solve_for_x_time", "solve_for_z_u_time", "total time", "preproc time"
+      "solve_for_x_time", "solve_for_z_u_time", "total_time", "preproc_time"
       );
 
   for (const auto& s : stats_hist) {
@@ -673,11 +724,15 @@ void AdmmSolver<T>::LogIterationsHistory(
     // Compute some totals and averages.
 
     file << fmt::format(
-        "{} {} {} {} {} {} {} {}\n",
+        "{} {} {} {} {} {} {} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
         iters,
+        //force output related: 
+        metrics.sigma_x_sum, metrics.sigma_y_sum, metrics.sigma_z_sum,
+        //parameters
+        metrics.rho,
         // Error metrics.
         metrics.r_norm_l2,
         metrics.s_norm_l2,

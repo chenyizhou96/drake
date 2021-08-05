@@ -222,6 +222,21 @@ ContactSolverStatus UnconstrainedPrimalSolver<double>::DoSolveWithGuess(
 
     state_kp = state;
   }
+  if (parameters_.verbosity_level >= 1) {
+    const auto& sigma = cache.gamma;
+    double sigma_x_sum = 0;
+    double sigma_y_sum = 0;
+    double sigma_z_sum = 0;
+  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+    const auto& sigma_ic = sigma.template segment<3>(ic3);
+    sigma_x_sum += sigma_ic[0];
+    sigma_y_sum += sigma_ic[1];
+    sigma_z_sum += sigma_ic[2];
+  }
+  PRINT_VAR(sigma_x_sum);
+  PRINT_VAR(sigma_y_sum);
+  PRINT_VAR(sigma_z_sum);
+  }
 
   if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
 

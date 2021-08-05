@@ -118,6 +118,8 @@ using Eigen::Vector3d;
 using clock = std::chrono::steady_clock;
 
 
+std::vector<geometry::GeometryId> box_geometry_ids;
+
 
 const RigidBody<double>& AddBox(const std::string& name,
                                 const Vector3<double>& block_dimensions,
@@ -218,7 +220,7 @@ const RigidBody<double>& AddBox(const std::string& name,
 
   auto id = plant->RegisterCollisionGeometry(
       box, X_BG, geometry::Box(LBx, LBy, LBz), name + "_collision", props);
-  [&id] {};
+  box_geometry_ids.push_back(id);
 
   return box;
 }
@@ -233,6 +235,7 @@ void FixAppliedForce(const BodyIndex& body_index, const Vector3d& f_Bo_W,
   //TODO: adjust here so that box doesn't rotate in sliding case 
   forces[0].body_index = body_index;
   forces[0].p_BoBq_B = Vector3d::Zero();
+  //forces[0].p_BoBq_B[0] = -FLAGS_radius0;
   forces[0].F_Bq_W = SpatialForce<double>(Vector3d(0.0, 0.0, 0.0), f_Bo_W);
   DRAKE_DEMAND (plant != nullptr);
   DRAKE_DEMAND(plant_context != nullptr);
@@ -289,6 +292,9 @@ int do_main() {
   auto box_index = AddBox("box", box_size, mass, friction, 
                   orange, true,  &plant).index();
 
+  geometry::GeometrySet all_boxes(box_geometry_ids);
+  scene_graph.ExcludeCollisionsWithin(all_boxes);                
+
   plant.Finalize();
 
 
@@ -343,6 +349,7 @@ int do_main() {
 
     AdmmSolverParameters params;
     params.dynamic_rho = FLAGS_dynamic_rho;
+    params.rho = 100;
     params.verbosity_level = FLAGS_verbosity_level;
     params.initialize_force = FLAGS_initialize_force;
     params.log_stats = true;
