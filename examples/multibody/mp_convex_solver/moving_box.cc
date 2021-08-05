@@ -137,7 +137,7 @@ const RigidBody<double>& AddBox(const std::string& name,
   // Describe body B's mass, center of mass, and inertia properties.
   const Vector3<double> p_BoBcm_B = Vector3<double>::Zero();
   const UnitInertia<double> G_BBcm_B =
-      UnitInertia<double>::SolidBox(LBx, LBy, LBz);
+      UnitInertia<double>::TriaxiallySymmetric(1.0e20);
   const SpatialInertia<double> M_BBcm_B(mass, p_BoBcm_B, G_BBcm_B);
 
   // Create a rigid body B with the mass properties of a uniform solid block.
@@ -460,6 +460,7 @@ int do_main() {
     }
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
+      admm_solver->LogOneTimestepHistory("one_step_log.dat", 100);
     }
   }
 

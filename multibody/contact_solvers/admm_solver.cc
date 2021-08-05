@@ -331,7 +331,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     // }
 
 
-    if (parameters_.verbosity_level > 0) {
+    if (parameters_.verbosity_level >= 3) {
       VectorX<double> u_tilde_slope(nc);
       this -> CalcSlope(state.u_tilde(), &u_tilde_slope);
       VectorX<double> z_slope(nc);
@@ -401,14 +401,21 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     }
   }
 
+  if (k == parameters_.max_iterations) {
+    stats_history_.push_back(stats_);
+    this -> LogFailureData("failure_log.dat");
+  }
   
+
+  if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
   //TODO: Work on all the functions here. Keep some output...... 
   // if (parameters_.verbosity_level >= 1) {
   //   PRINT_VAR(state.sigma());
   // }
 
-  auto& last_metrics =
-      parameters_.log_stats ? stats_.iteration_metrics.back() : metrics;
+  //auto& last_metrics =
+      //parameters_.log_stats ? stats_.iteration_metrics.back() : metrics;
+   auto& last_metrics = stats_.iteration_metrics.back();
   //std::tie(last_metrics.mom_l2, last_metrics.mom_max) =
       //this->CalcScaledMomentumError(data, state.v(), state.sigma());
   last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
@@ -436,13 +443,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   stats_history_.push_back(stats_);
 
   total_time_ += global_timer.Elapsed();
-
-  if (k == parameters_.max_iterations) {
-    this -> LogFailureData("failure_log.dat");
-  }
-  
-
-  if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
 
   return ContactSolverStatus::kSuccess;
 }
@@ -473,6 +473,7 @@ bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g,
   if (parameters_.log_stats) {
     stats_.iteration_metrics.back().r_norm_l2 = r_norm;
     stats_.iteration_metrics.back().s_norm_l2 = s_norm;
+    stats_.iteration_metrics.back().rho = rho;
   }
 
   //dynamic rho code:
@@ -669,8 +670,36 @@ AdmmSolver<T>::CalcIterationMetrics(const State& s,
   return metrics;
 }
 
+//logs iteration metrics at step of the whole stats
+template <typename T>
+void AdmmSolver<T>::LogOneTimestepHistory(
+    const std::string& file_name, const int& step) const {
+  const std::vector<AdmmSolverStats>& stats_hist =this->get_stats_history();
+  const auto& stats = stats_hist[step];
+  std::ofstream file(file_name);
+  file << fmt::format(
+      "{} {} {}\n",
+      //error metrics
+      "r_norm", "s_norm",
+      //parameters
+      "rho"
+      );
+  for (const auto& metrics:stats.iteration_metrics) {
+    file << fmt::format(
+    "{} {} {}\n",
+    // Error metrics.
+    metrics.r_norm_l2,
+    metrics.s_norm_l2,
+    metrics.rho
+    );
+  }
+  file.close();
 
 
+}
+
+
+//log iteration metrics of last steps in case the algorithm doesn't converge
 template <typename T>
 void AdmmSolver<T>::LogFailureData(
     const std::string& file_name) const {
@@ -700,6 +729,9 @@ void AdmmSolver<T>::LogIterationsHistory(
     const std::string& file_name) const {
   const std::vector<AdmmSolverStats>& stats_hist =
       this->get_stats_history();
+  if (parameters_.verbosity_level >= 1) {
+    PRINT_VAR(stats_hist.size());
+  }
   std::ofstream file(file_name);
   file << fmt::format(
       "{} {} {} {} {} {} {} {} {} {} {}\n",

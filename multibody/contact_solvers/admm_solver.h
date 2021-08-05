@@ -36,7 +36,7 @@ struct AdmmSolverParameters {
   //maybe move to another place?
   bool dynamic_rho{false};
   double rho{1};
-  double rho_factor{4.0};
+  double rho_factor{2.0};
   double r_s_ratio{10.0};
   bool rho_changed{false};
   
@@ -174,6 +174,8 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   void LogFailureData(const std::string& file_name) const;
 
   void LogSolutionHistory(const std::string& file_name) const;
+
+  void LogOneTimestepHistory(const std::string& file_name, const int& step) const;
 
 
  private:
