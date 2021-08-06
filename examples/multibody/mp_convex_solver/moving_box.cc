@@ -24,6 +24,7 @@
 #include "drake/multibody/plant/contact_results.h"
 #include "drake/multibody/plant/point_pair_contact_info.h"
 #include "drake/multibody/plant/contact_results_to_lcm.h"
+#include "drake/multibody/tree/planar_joint.h"
 #include "drake/systems/analysis/implicit_integrator.h"
 #include "drake/systems/analysis/simulator.h"
 #include "drake/systems/analysis/simulator_gflags.h"
@@ -41,7 +42,7 @@ namespace mp_convex_solver {
 namespace {
 
 // Simulation parameters.
-DEFINE_double(simulation_time, 5.0, "Simulation duration in seconds");
+DEFINE_double(simulation_time, 0.1, "Simulation duration in seconds");
 DEFINE_double(
     mbp_time_step, 1E-2,
     "If mbp_time_step > 0, the fixed-time step period (in seconds) of discrete "
@@ -56,9 +57,9 @@ DEFINE_double(stiction_tolerance, 1.0E-4,
 
 // Physical parameters.
 DEFINE_double(density, 1000.0, "The density of all objects, in kg/m³.");
-DEFINE_double(friction_coefficient, 1.0,
+DEFINE_double(friction_coefficient, 0.5,
               "All friction coefficients have this value.");
-DEFINE_double(stiffness, 1.0E3, "Point contact stiffness in N/m."); //For boxes: 1.0e8 recommended
+DEFINE_double(stiffness, 1.0E4, "Point contact stiffness in N/m.");
 DEFINE_double(dissipation_rate, 0.01, "Linear dissipation rate in seconds.");
 
 // Contact geometry parameters.
@@ -87,13 +88,24 @@ DEFINE_double(ls_alpha_max, 1.5, "Maximum line search step.");
 DEFINE_double(rt_factor, 1.0e-3, "Rt_factor");
 DEFINE_double(abs_tol, 1.0e-6, "Absolute tolerance [m/s].");
 DEFINE_double(rel_tol, 1.0e-4, "Relative tolerance [-].");
-DEFINE_int32(solver_type, 2, "define solver type, 0 for TAMSI, 1 for unconstrained primal solver, 2 for admm solver");
-DEFINE_double(radius0, 0.05, "radius or side length/2 for the smallest sphere/box");
-DEFINE_int32(max_iterations, 100, "max iterations for the admm solver, for debugging purpose");
-DEFINE_bool(initialize_force, true, "admm solver specific: whether initialize force analytically");
-DEFINE_double(input_force_x, 1.0, "defines the x direction of the external force on the box, y and z dir are 0");
-DEFINE_bool(dynamic_rho, false, "whether or not to use dynamic rho for admm solver");
-DEFINE_double(rho, 1.0, "rho parameter in admm to start with");
+DEFINE_int32(solver_type, 2,
+             "define solver type, 0 for TAMSI, 1 for unconstrained primal "
+             "solver, 2 for admm solver");
+DEFINE_double(radius0, 0.05,
+              "radius or side length/2 for the smallest sphere/box");
+DEFINE_int32(max_iterations, 100,
+             "max iterations for the admm solver, for debugging purpose");
+DEFINE_bool(initialize_force, true,
+            "admm solver specific: whether initialize force analytically");
+DEFINE_double(input_force_x, 1.0,
+              "defines the x direction of the external force on the box, y and "
+              "z dir are 0");
+DEFINE_bool(dynamic_rho, false,
+            "whether or not to use dynamic rho for admm solver");
+DEFINE_double(rho, 1.0, "Initial value of rho.");
+DEFINE_double(inertia_factor, 1.0, "Multiplies the box inertia.");
+DEFINE_bool(make_planar, true, "Make a truly planar case.");
+
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -116,6 +128,7 @@ using drake::multibody::contact_solvers::internal::
 using drake::multibody::contact_solvers::internal::
     AdmmSolverStats;
 using Eigen::Translation3d;
+using Eigen::Vector2d;
 using Eigen::Vector3d;
 using clock = std::chrono::steady_clock;
 
@@ -136,11 +149,13 @@ const RigidBody<double>& AddBox(const std::string& name,
 
   // Describe body B's mass, center of mass, and inertia properties.
   const Vector3<double> p_BoBcm_B = Vector3<double>::Zero();
-  //const UnitInertia<double> G_BBcm_B =
-      //UnitInertia<double>::TriaxiallySymmetric(1.0e20);
-  const UnitInertia<double> G_BBcm_B =
-      UnitInertia<double>::SolidBox(LBx, LBy, LBz);
-  const SpatialInertia<double> M_BBcm_B(mass, p_BoBcm_B, G_BBcm_B);
+
+  const RotationalInertia<double> I_BBcm_B =
+      FLAGS_inertia_factor * UnitInertia<double>::SolidBox(LBx, LBy, LBz);
+  const SpatialInertia<double> M_BBcm_B =
+      SpatialInertia<double>::MakeFromCentralInertia(mass, p_BoBcm_B, I_BBcm_B);
+  //UnitInertia<double>::TriaxiallySymmetric(1.0e20);
+  //const SpatialInertia<double> M_BBcm_B(mass, p_BoBcm_B, G_BBcm_B);
 
   // Create a rigid body B with the mass properties of a uniform solid block.
   const RigidBody<double>& box = plant->AddRigidBody(name, M_BBcm_B);
@@ -164,35 +179,53 @@ const RigidBody<double>& AddBox(const std::string& name,
                     geometry::internal::kFriction,
                     CoulombFriction<double>(friction, friction));
 
+  const Vector4<double> red(1.0, 0.0, 0.0, 1.0);
+  const Vector4<double> red_50(1.0, 0.0, 0.0, 0.5);
+  const double radius_x = LBx / FLAGS_num_spheres_per_face / 2.0;
+  const double radius_y = LBy / FLAGS_num_spheres_per_face / 2.0;
+  const double radius_z = LBz / FLAGS_num_spheres_per_face / 2.0;
+  double dx = 2 * radius_x;
+  double dy = 2 * radius_y;
+  double dz = 2 * radius_z;
+  const int ns = FLAGS_num_spheres_per_face;
+
+  auto add_sphere = [&](const std::string& sphere_name, double x, double y,
+                        double z, double radius) {
+    const Vector3<double> p_BoSpherei_B(x, y, z);
+    const RigidTransform<double> X_BSpherei(p_BoSpherei_B);
+    geometry::Sphere shape(radius);
+    // Ellipsoid might not be accurate. From console [warning]:
+    // "Ellipsoid is primarily for ComputeContactSurfaces in
+    // hydroelastic contact model. The accuracy of other collision
+    // queries and signed distance queries are not guaranteed."
+    // geometry::Ellipsoid shape(radius_x, radius_y, radius_z);
+    plant->RegisterCollisionGeometry(box, X_BSpherei, shape, sphere_name,
+                                     props);
+    if (FLAGS_visualize_multicontact) {
+      plant->RegisterVisualGeometry(box, X_BSpherei, shape, sphere_name, red);
+    }
+  };
+
+  if (FLAGS_make_planar) {
+#if 0
+    // For 2D case, only add spheres along the center line.
+    for (int i = 0; i < ns; ++i) {
+      const double x = -LBx / 2 + radius_x + i * dx;
+      const double y = 0.0;
+      const double z = -LBz / 2 + radius_z;
+
+      const std::string name_spherei =
+          fmt::format("{}_sphere_{}_collision", name, i);
+      add_sphere(name_spherei, x, y, z, radius_x);
+    }
+#endif
+    add_sphere("c1", -LBx / 2, 0.0, -LBz / 2, 0);
+    add_sphere("c2",      0.0, 0.0, -LBz / 2, 0);
+    add_sphere("c3", +LBx / 2, 0.0, -LBz / 2, 0);
+  } else {
+
   //add spheres to emulate box collision:
-  if (emulate_box_multicontact) {
-    const Vector4<double> red(1.0, 0.0, 0.0, 1.0);
-    const Vector4<double> red_50(1.0, 0.0, 0.0, 0.5);
-    const double radius_x = LBx / FLAGS_num_spheres_per_face / 2.0;
-    const double radius_y = LBy / FLAGS_num_spheres_per_face / 2.0;
-    const double radius_z = LBz / FLAGS_num_spheres_per_face / 2.0;
-    double dx = 2 * radius_x;
-    double dy = 2 * radius_y;
-    double dz = 2 * radius_z;
-    const int ns = FLAGS_num_spheres_per_face;
-
-    auto add_sphere = [&](const std::string& sphere_name, double x, double y,
-                          double z, double radius) {
-      const Vector3<double> p_BoSpherei_B(x, y, z);
-      const RigidTransform<double> X_BSpherei(p_BoSpherei_B);
-      geometry::Sphere shape(radius);
-      // Ellipsoid might not be accurate. From console [warning]:
-      // "Ellipsoid is primarily for ComputeContactSurfaces in
-      // hydroelastic contact model. The accuracy of other collision
-      // queries and signed distance queries are not guaranteed."
-      // geometry::Ellipsoid shape(radius_x, radius_y, radius_z);
-      plant->RegisterCollisionGeometry(box, X_BSpherei, shape, sphere_name,
-                                        props);
-      if (FLAGS_visualize_multicontact) {
-        plant->RegisterVisualGeometry(box, X_BSpherei, shape, sphere_name, red);
-      }
-    };
-
+  if (emulate_box_multicontact) {    
     // Add points (zero size spheres) at the corners to avoid spurious
     // interpentrations between boxes and the sink.
     add_sphere("c1", -LBx / 2, -LBy / 2, -LBz / 2, 0);
@@ -221,6 +254,8 @@ const RigidBody<double>& AddBox(const std::string& name,
       }    // j
     }   // i
   }    
+
+  } // make_planar
 
   auto id = plant->RegisterCollisionGeometry(
       box, X_BG, geometry::Box(LBx, LBy, LBz), name + "_collision", props);
@@ -295,9 +330,23 @@ int do_main() {
   const double mass = density * volume;
   auto box_index = AddBox("box", box_size, mass, friction, 
                   orange, true,  &plant).index();
+  const auto& body = plant.get_body(box_index);                  
+
+  // Setup a purely 2D box with translations in the x-z plane and only pitch
+  // rotations about the y axis.
+  if (FLAGS_make_planar) {
+    const Vector3d damping = Vector3d::Zero();
+    const auto R_WF = RotationMatrixd::MakeXRotation(M_PI / 2.0);
+    const RigidTransformd X_WF(R_WF, Vector3d::Zero());
+    plant.AddJoint<PlanarJoint>("planar_joint", plant.world_body(), X_WF, body,
+                                X_WF, damping);
+  }
 
   geometry::GeometrySet all_boxes(box_geometry_ids);
-  scene_graph.ExcludeCollisionsWithin(all_boxes);                
+  scene_graph.ExcludeCollisionsWithin(all_boxes);
+
+  // Setting g = 10 makes my numbers simpler.
+  plant.mutable_gravity_field().set_gravity_vector(-10.0 * Vector3d::UnitZ());
 
   plant.Finalize();
 
@@ -386,18 +435,23 @@ int do_main() {
   // such that X_WB is an identity transform and B's spatial velocity is zero.
   plant.SetDefaultContext(&plant_context);
   
-  //set initial position of the box:
-  const Vector3d p_WB0(0.0, 0.0, FLAGS_radius0);  // set radius ...
-  plant.SetFreeBodyPose(&plant_context, plant.get_body(box_index),
-                        RigidTransformd(p_WB0));
+  //set initial position of the box:  
+  if (FLAGS_make_planar) {
+    const Vector2d p_WB0(0.0, FLAGS_radius0);
+    const auto& joint = plant.GetJointByName<PlanarJoint>("planar_joint");
+    joint.set_pose(&plant_context, p_WB0, 0.0);
+  } else {
+    const Vector3d p_WB0(0.0, 0.0, FLAGS_radius0);
+    plant.SetFreeBodyPose(&plant_context, plant.get_body(box_index),
+                          RigidTransformd(p_WB0));
+  }
 
   // set external force on the box:
   const Vector3d external_force(FLAGS_input_force_x, 0.0, 0.0);
   FixAppliedForce(box_index, external_force, &plant, &plant_context);
 
   std::ofstream log_file("solution.dat");
-  log_file << fmt::format("time x y z roll pitch yaw fx fy fz\n");
-  const auto& body = plant.get_body(box_index);
+  log_file << fmt::format("time x y z roll pitch yaw fx fy fz\n");  
 
   auto simulator =
       MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
@@ -462,7 +516,9 @@ int do_main() {
     }
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
+
       admm_solver->LogOneTimestepHistory("one_step_log.dat", 4);
+
     }
   }
 
