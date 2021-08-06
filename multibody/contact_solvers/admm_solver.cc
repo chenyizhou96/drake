@@ -192,7 +192,11 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   data_.D_sqrt = data_.D.cwiseSqrt();
   const auto& D = data_.D;
   const auto& rho = parameters_.rho;
-  
+
+  PRINT_VAR(D.size() / 3);
+  PRINT_VAR(D.transpose());
+  PRINT_VAR(rho);
+
   //each entry of D must be positive
   DRAKE_DEMAND(D.minCoeff() > 0);
 
