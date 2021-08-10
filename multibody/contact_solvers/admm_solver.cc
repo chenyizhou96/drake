@@ -302,8 +302,8 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       //PRINT_VAR(state.u_tilde());
       PRINT_VAR(state.u_tilde().norm());
     }
-    DRAKE_DEMAND(mom_l2 < parameters_.abs_tolerance);
-    DRAKE_DEMAND(mom_max < parameters_.abs_tolerance);
+    DRAKE_DEMAND(mom_l2 < 1.0E-14);
+    DRAKE_DEMAND(mom_max < 1.0E-14);
     
     local_timer.Reset();
     // Update change in contact velocities.
@@ -342,7 +342,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       this -> CalcSlope(state.cache().z, &z_slope);
       if (state.u_tilde().norm() > 1e-8) {
         for (int i = 0; i < nc; i++)
-          DRAKE_DEMAND(u_tilde_slope[i] < data_.contact_data->get_mu()[i]);
+          DRAKE_DEMAND(u_tilde_slope[i] < data_.contact_data->get_mu()[i]+1E-5);
       }
       int index = -1;
       if (state.cache().z.norm() > 1e-8) {
@@ -359,7 +359,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       }
       if (state.cache().z.norm() > 1e-8) {
         for (int i = 0; i < nc; i++)
-          DRAKE_DEMAND(z_slope[i] < data_.contact_data->get_mu().cwiseInverse()[i]);
+          DRAKE_DEMAND(z_slope[i] < data_.contact_data->get_mu().cwiseInverse()[i]+1E-5);
       }
       //PRINT_VAR(state.u_tilde());
       //PRINT_VAR(u_tilde_slope);
@@ -381,8 +381,20 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     
     DRAKE_DEMAND(abs(uz_product) < parameters_.rel_tolerance);
 
-    // Update iteration statistics.
-   //  metrics = CalcIterationMetrics(state, state_kp, num_ls_iters, alpha);
+    if (parameters_.verbosity_level >= 4 ) {
+      if (k > 75 && k < 90){
+      PRINT_VAR(k);
+      
+      PRINT_VAR(state.z_tilde());
+      PRINT_VAR(state.u_tilde());
+      PRINT_VAR(cache.u);
+      PRINT_VAR(cache.z);
+      PRINT_VAR(cache.g);
+      PRINT_VAR(state.v());
+      PRINT_VAR(state.sigma());
+      }
+    }
+
     if (parameters_.log_stats) {
       stats_.iteration_metrics.push_back(metrics);
     }
@@ -392,6 +404,9 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     const bool converged =
         this -> CheckConvergenceCriteria(cache.g, cache.z, parameters_.rho*cache.u,
                                  state.sigma(), cache.vc, &state.mutable_u_tilde());
+    if (parameters_.rho_changed) {
+      cache.u  = data_.Dinv_sqrt.cwiseProduct(state.u_tilde());
+    }
 
     if (converged) {
       // TODO: refactor into PrintConvergedIterationStats().
@@ -403,6 +418,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       }
       break;
     }
+
   }
 
   if (k == parameters_.max_iterations) {
@@ -526,6 +542,7 @@ void AdmmSolver<T>::CalcSlope(const VectorX<T>& u, VectorX<T>* slope) const{
   }
 }
 
+//matrix G = rho(D+ rho R)^-1, used for the weight matrix in the supernodal solver 
 template <typename T>
 void AdmmSolver<T>::CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, 
       const double& rho, std::vector<MatrixX<T>>* G) const{
@@ -537,7 +554,7 @@ void AdmmSolver<T>::CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R,
     const auto& D_ic = D.template segment<3>(ic3);
     //const Vector3<T> Rinv = R_ic.cwiseInverse();
     MatrixX<T>& G_ic = (*G)[ic];
-    G_ic = rho * (D_ic+rho*R_ic).cwiseInverse().asDiagonal();
+    G_ic = rho * ((D_ic+rho*R_ic).cwiseInverse().asDiagonal());
   }
 
 }

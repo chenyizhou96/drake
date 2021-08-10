@@ -405,6 +405,7 @@ int do_main() {
     params.rho = FLAGS_rho;
     params.verbosity_level = FLAGS_verbosity_level;
     params.initialize_force = FLAGS_initialize_force;
+    params.max_iterations = FLAGS_max_iterations;
     params.log_stats = true;
     admm_solver->set_parameters(params);
   }
