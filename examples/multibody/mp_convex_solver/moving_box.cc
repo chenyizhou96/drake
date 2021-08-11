@@ -62,6 +62,9 @@ DEFINE_double(friction_coefficient, 0.5,
 DEFINE_double(stiffness, 1.0E4, "Point contact stiffness in N/m.");
 DEFINE_double(dissipation_rate, 0.01, "Linear dissipation rate in seconds.");
 
+DEFINE_double(soft_tolerance, 1.0E-7, "soft tolerance for the projection in admm solver");
+DEFINE_bool(scale_with_R, false, "whether use D=R for admm");
+
 // Contact geometry parameters.
 DEFINE_int32(
     num_spheres_per_face, 3,
@@ -407,6 +410,8 @@ int do_main() {
     params.initialize_force = FLAGS_initialize_force;
     params.max_iterations = FLAGS_max_iterations;
     params.log_stats = true;
+    params.soft_tolerance = FLAGS_soft_tolerance;
+    params.scale_with_R = FLAGS_scale_with_R;
     admm_solver->set_parameters(params);
   }
 

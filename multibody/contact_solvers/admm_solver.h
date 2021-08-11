@@ -52,6 +52,8 @@ struct AdmmSolverParameters {
   int verbosity_level{0};
 
   bool log_stats{true};
+  //whether to use D = R
+  bool scale_with_R{false};
 };
 
 struct AdmmSolverIterationMetrics {
@@ -87,6 +89,9 @@ struct AdmmSolverIterationMetrics {
   //s_norm_max is max norm and .._l2 the l2 norm 
   double s_norm_max{0.0};
   double s_norm_l2{0.0};
+
+  //bound for residuals:
+  double bound{0.0};
 
 };
 
@@ -191,33 +196,13 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
     void Resize(int nv, int nc) {
       const int nc3 = 3 * nc;
-      vc.resize(nc3);
-      g.resize(nc3);
-      g_tilde.resize(nc3);
-      u.resize(nc3);
-      z.resize(nc3);
+      vc_tilde.resize(nc3);
       // N.B. The supernodal solver needs MatrixX instead of Matrix3.
       G.resize(nc, Matrix3<T>::Zero());
     }
 
-    void mark_invalid() {
-      valid_contact_velocity = false;
-    }
-
-    // Direct algebraic funtions of velocity.
-    // CalcVelocityAndImpulses() updates these entries.
-    //bool valid_contact_velocity_and_impulses{false};
-    VectorX<T> vc;     // Contact velocities.
-
-    VectorX<T> g; //g = J*v-vhat+R*sigma
-    VectorX<T> g_tilde;  //g_tilde = D^-0.5 g
-    VectorX<T> u;  //u = D^-0.5 u_tilde
-    VectorX<T> z;  //z = D^0.5 z_tilde
+    VectorX<T> vc_tilde;     // tilde Contact velocities.
     
-    //think about whether needed at SolveForX?
-    VectorX<T> Finv; 
-    
-    bool valid_contact_velocity{true};
 
     std::vector<MatrixX<T>> G;  //G = rho(D+rhoR)^-1, for building the weight in supernodal solver
 
@@ -235,52 +220,55 @@ class AdmmSolver final : public ConvexSolverBase<T> {
     State(int nv, int nc) { Resize(nv, nc); }
 
     void Resize(int nv, int nc) {
-      v_.resize(nv);
+      const int nc3 = 3*nc;
+      v_tilde_.resize(nv);
+      sigma_tilde_.resize(nc3);
+      z_tilde_.resize(nc3);
+      u_tilde_.resize(nc3);
       cache_.Resize(nv, nc);
     }
 
-    const VectorX<T>& v() const { return v_; }
-    VectorX<T>& mutable_v() {
-      // Mark all cache quantities as invalid since they all are a function of
-      // velocity.
-      cache_.mark_invalid();
-      return v_;
+    const VectorX<T>& v_tilde() const { return v_tilde_; }
+    VectorX<T>& mutable_v_tilde() {
+      return v_tilde_;
     }
 
-    const VectorX<T>& sigma() const { return sigma_; }
-    VectorX<T>& mutable_sigma() {
-      // Mark all cache quantities as invalid since they all are a function of
-      // velocity.
-      cache_.mark_invalid();
-      return sigma_;
-    }
+    const VectorX<T>& sigma_tilde() const { return sigma_tilde_; }
+    VectorX<T>& mutable_sigma_tilde() { return sigma_tilde_;}
 
     const VectorX<T>& u_tilde() const { return u_tilde_; }
-    VectorX<T>& mutable_u_tilde() {
-      // Mark all cache quantities as invalid since they all are a function of
-      // velocity.
-      cache_.mark_invalid();
-      return u_tilde_;
-    }
+    VectorX<T>& mutable_u_tilde() { return u_tilde_;}
 
     const VectorX<T>& z_tilde() const { return z_tilde_; }
-    VectorX<T>& mutable_z_tilde() {
-      // Mark all cache quantities as invalid since they all are a function of
-      // velocity.
-      cache_.mark_invalid();
-      return z_tilde_;
-    }
+    VectorX<T>& mutable_z_tilde() { return z_tilde_;}
 
     const Cache& cache() const { return cache_; }
     Cache& mutable_cache() const { return cache_; }
 
    private:
-    VectorX<T> v_;
-    VectorX<T> sigma_;
+    VectorX<T> v_tilde_;
+    VectorX<T> sigma_tilde_;
     VectorX<T> u_tilde_;
     VectorX<T> z_tilde_;
     mutable Cache cache_;
   };
+
+  struct TildeData {
+    DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(TildeData);
+
+    TildeData() = default;
+    BlockSparseMatrix<T> Jblock_tilde;  // Jacobian tilde as block-structured matrix.
+    BlockSparseMatrix<T> Mblock_tilde;  // Mass mastrix tilde as block-structured matrix.
+    std::vector<MatrixX<T>> Mt_tilde;   //Mass matrix tilde for supernodal
+    VectorX<T> H; //H = diag(M);
+    VectorX<T> vc_stab_tilde;
+    VectorX<T> v_star_tilde;
+    VectorX<T> M_tilde_v_star_tilde; //convenient to use, delete later
+
+  };
+
+  //Preprocess data and form tilde data
+  void Preprocess(TildeData* tilde_data);
 
   //initialize scaling matrix D as approximation of diag(JM^-1 J^T)
   void InitializeD(const int& nc,const std::vector<MatrixX<T>>& Mt, 
@@ -291,34 +279,19 @@ class AdmmSolver final : public ConvexSolverBase<T> {
       const typename ConvexSolverBase<T>::PreProcessedData& data,
       const VectorX<T>& v_guess, ContactSolverResults<T>* result) final;
 
-  //LLT factorization for matrix M+J^T G J and initialize Finv
-  void InitializeSolveForXData(const State& s, conex::SuperNodalSolver* solver) const;
+  //LLT factorization for matrix M_tilde+J_tilde^T G J_tilde 
+  void InitializeSolveForVData(const State& s, conex::SuperNodalSolver* solver) const;
+  
+  //calculates momentum error in the tilde setting for debugging
+  std::pair<T, T> CalcTildeScaledMomentumError(const VectorX<T>& v_tilde,
+                               const VectorX<T>& sigma_tilde) const;
 
-  //Solve for x = [v, sigma]:
-  //specific steps in the notes 
-  void SolveForX(const State& s, const VectorX<T>& v_star, 
-          VectorX<T>* v, VectorX<T>* sigma, conex::SuperNodalSolver* solver) const;
-
-  //calculates g, g_tilde with x
-  //g = J*v+ R*sigma - vhat, g_tilde = D^-0.5 g
-  void CalcG(const VectorX<T>& v, const VectorX<T>& sigma, VectorX<T>* g) const;
-
-
-  // Calculate z, z_tilde with g and u
-  // z_tilde = P*_{D^-1}(g_tilde^{k+1} + u_tilde^k), z = D^0.5 z_tilde 
-  void CalcZTilde(const VectorX<T>& g_tilde, const VectorX<T>& u_tilde, VectorX<T>*z_tilde) const;
-
-  //calculate r_sigma = rho*R*D^-0.5*(z_tilde+D^-0.5 vhat-u_tilde) - rho*R*u
-  void CalcRsigma(const VectorX<T>& z_tilde, const VectorX<T>& u, VectorX<T>* r_sigma) const;
-
-  //calculate rv = J^T*R^-1*r_sigma + M*v_star
-  void CalcRv(const VectorX<T>& r_sigma, const VectorX<T>& v_star, VectorX<T>* r_v) const;
 
   //calculate G = rho(D+rhoR)^-1, used in the SetWeightMatrix of supernodal solver
   void CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, const double& rho, std::vector<MatrixX<T>>* G) const;
 
-  bool CheckConvergenceCriteria(const VectorX<T>& g, const VectorX<T>& z, 
-                      const VectorX<T>& y, const VectorX<T>& sigma, const VectorX<T>& vc, VectorX<T>* u_tilde); 
+  bool CheckConvergenceCriteria(const VectorX<T>& g_tilde, const VectorX<T>& z_tilde, 
+                      const VectorX<T>& sigma_tilde, const VectorX<T>& y_tilde, const VectorX<T>& vc_tilde); 
   
   //calculate normal/tangential rate for utilde/ztilde, for debugging purpose only
   //u should be of length nc3 and slope of length nc
@@ -331,10 +304,6 @@ class AdmmSolver final : public ConvexSolverBase<T> {
       const State& s_k, const State& s_kp, int num_ls_iterations,
       double alpha) const;
 
-  // Solves for dv using supernodal algebra.
-  void CallSupernodalSolver(const State& s, VectorX<T>* dv,
-                            conex::SuperNodalSolver* solver);
-
   using ConvexSolverBase<T>::data_;
   AdmmSolverParameters parameters_;
   AdmmSolverStats stats_;
@@ -346,6 +315,8 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   // TODO: think about whether it is really needed
   //Yizhou: probably not needed in ADMM
   mutable State state_prev;
+
+  TildeData tilde_data_;
 };
 
 template <>
