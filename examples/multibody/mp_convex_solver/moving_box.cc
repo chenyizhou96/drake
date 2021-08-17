@@ -98,6 +98,7 @@ DEFINE_double(radius0, 0.05,
               "radius or side length/2 for the smallest sphere/box");
 DEFINE_int32(max_iterations, 100,
              "max iterations for the admm solver, for debugging purpose");
+DEFINE_double(rho_factor, 2.0, "increment factor for dynamic rho in admm");
 DEFINE_bool(initialize_force, true,
             "admm solver specific: whether initialize force analytically");
 DEFINE_double(input_force_x, 1.0,
@@ -412,6 +413,7 @@ int do_main() {
     params.log_stats = true;
     params.soft_tolerance = FLAGS_soft_tolerance;
     params.scale_with_R = FLAGS_scale_with_R;
+    params.rho_factor = FLAGS_rho_factor;
     admm_solver->set_parameters(params);
   }
 
@@ -523,7 +525,7 @@ int do_main() {
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
 
-      admm_solver->LogOneTimestepHistory("one_step_log.dat", 4);
+      admm_solver->LogOneTimestepHistory("one_step_log.dat", 3);
 
     }
   }

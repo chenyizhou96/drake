@@ -173,6 +173,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   using std::abs;
   using std::max;
   using std::pow;
+  using std::sqrt;
 
   // Starts a timer for the overall execution time of the solver.
   Timer global_timer;
@@ -247,12 +248,36 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const auto& D_sqrt = data_.D_sqrt;
   const auto& rho = parameters_.rho;
 
-  PRINT_VAR(D.size() / 3);
-  PRINT_VAR(D.transpose());
-  PRINT_VAR(rho);
+  // PRINT_VAR(D.size() / 3);
+  // PRINT_VAR(D.transpose());
+  // PRINT_VAR(rho);
 
   //each entry of D must be positive
   DRAKE_DEMAND(D.minCoeff() > 0);
+  
+  // //code for logging initial info: 
+  // SaveVector("v_guess.csv", v_guess);
+  // PRINT_VAR(v_guess);
+  // SaveVector("vhat.csv", data_.vc_stab);
+  // PRINT_VAR(data_.vc_stab);
+  // SaveVector("vstar.csv", data_.dynamics_data->get_v_star());
+  // PRINT_VAR(data_.dynamics_data->get_v_star());
+  // SaveMatrix("M.csv", data_.Mt[0]);
+  // PRINT_VAR(data_.Mt[0]);
+  // for (auto [p ,t, Jpt] : data_.Jblock.get_blocks()) {
+  //     SaveMatrix("J.csv", Jpt);
+  //     PRINT_VAR(Jpt)
+  // }
+  // SaveVector("R.csv", data_.R);
+  // PRINT_VAR(data_.R);
+  // SaveVector("mu.csv", data_.contact_data->get_mu());
+  // PRINT_VAR(data_.contact_data->get_mu());
+  // SaveVector("D.csv", D);
+  // PRINT_VAR(D);
+
+
+
+
 
   this-> Preprocess(&tilde_data_);
 
@@ -309,6 +334,13 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 
   state.mutable_u_tilde() = -D_sqrt.cwiseProduct(
                           Rinv_sqrt.cwiseProduct(state.sigma_tilde()))/rho;
+  
+  
+  // SaveVector("z_guess.csv", D_sqrt.cwiseProduct(state.z_tilde()));
+  // PRINT_VAR(state.z_tilde());
+  // SaveVector("u_guess.csv", Dinv_sqrt.cwiseProduct(state.u_tilde()));
+  // PRINT_VAR(state.u_tilde());
+
 
   stats_.preproc_time += preproc_timer.Elapsed();
 
@@ -340,6 +372,21 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 
     Timer local_timer;
 
+    //log start data for analysis:
+    if (parameters_.log_stats) {
+      stats_.iteration_metrics.push_back(metrics);
+      //collect data to see if scaling is right:
+      stats_.iteration_metrics.back().v_tilde = state.v_tilde();
+      stats_.iteration_metrics.back().sigma_tilde = state.sigma_tilde();
+      stats_.iteration_metrics.back().u_tilde = state.u_tilde();
+      stats_.iteration_metrics.back().z_tilde = state.z_tilde();
+      stats_.iteration_metrics.back().v_tilde_norm = state.v_tilde().norm();
+      stats_.iteration_metrics.back().sigma_tilde_norm = state.sigma_tilde().norm();
+      stats_.iteration_metrics.back().z_tilde_norm = state.z_tilde().norm();
+      stats_.iteration_metrics.back().u_tilde_norm = state.u_tilde().norm();
+    }
+
+    
     local_timer.Reset();
     if (k == 0 || parameters_.rho_changed){
       this -> InitializeSolveForVData(state, solver.get());
@@ -363,14 +410,34 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
                   state.z_tilde() - state.u_tilde() + vc_stab_tilde - cache.vc_tilde)));
     
     //calculate g_tilde for the ease of life:
-    VectorX<double> g_tilde = cache.vc_tilde + Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(
-                              state.sigma_tilde())) - vc_stab_tilde;
+    VectorX<double> g_tilde = cache.vc_tilde + Dinv_sqrt.cwiseProduct(
+                          R_sqrt.cwiseProduct(state.sigma_tilde())) - vc_stab_tilde;
 
     //step for z_tilde:
     const auto& mu_star = mu.cwiseInverse();
     ConvexSolverBase<double>::ProjectIntoDWarpedCone(parameters_.soft_tolerance, 
                                       mu_star, data_.D, g_tilde+state.u_tilde(), 
                                       &state.mutable_z_tilde());
+
+    if (parameters_.verbosity_level >=4) {
+      if (false) {
+        PRINT_VAR(k);
+        PRINT_VAR(state.z_tilde());
+        PRINT_VAR(state.u_tilde());
+        PRINT_VAR(g_tilde+state.u_tilde());
+        PRINT_VAR(mu_star);
+        PRINT_VAR(data_.D);
+        for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+          const auto& sum_ic = g_tilde+state.u_tilde().template segment<3>(ic3);
+          const auto& sum_ic_1 = sum_ic.template head<2>();
+          double ratio = sum_ic[2]/sum_ic_1.norm();
+          double new_ratio = sum_ic[2]/sqrt(pow(sum_ic_1.norm(),2)+1.0E-14);
+          PRINT_VAR(ratio);
+          PRINT_VAR(new_ratio);
+        }
+        //SaveVector("z_tilde_big.csv", state.z_tilde());
+      }
+    }
 
     //step for u tilde:
     state.mutable_u_tilde() += g_tilde - state.z_tilde();
@@ -393,16 +460,28 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     double l = M_tilde_dv_tilde.dot(dv_tilde);
     l += state.sigma_tilde().dot(state.sigma_tilde());
     uz_product /= l;
-    //IMPORTANT: uz_product can be machine epsilon if soft_tolerance is machine epsilon
-    DRAKE_DEMAND(uz_product < parameters_.rel_tolerance);
+    //IMPORTANT: uz_product is machine epsilon if soft_tolerance is machine epsilon
+    //DRAKE_DEMAND(uz_product < parameters_.rel_tolerance);
 
-    if (parameters_.log_stats) {
-       stats_.iteration_metrics.push_back(metrics);
+
+    if (parameters_.verbosity_level >=4) {
+      const auto& y_tilde = rho* state.u_tilde();
+      const auto& R_sqrt = data_.R.cwiseSqrt();
+      double s_norm = R_sqrt.cwiseProduct(Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(y_tilde))
+                                      +state.sigma_tilde()).norm();
+      if (false) {
+        PRINT_VAR(k);
+        PRINT_VAR(s_norm);
+        PRINT_VAR(state.z_tilde());
+        PRINT_VAR(state.u_tilde());
+        PRINT_VAR(g_tilde);
+      }
     }
-
+    
+    VectorX<double> y_tilde = rho*state.u_tilde();
     const bool converged =
         this -> CheckConvergenceCriteria(g_tilde, state.z_tilde(), state.sigma_tilde(),
-                                 rho* state.u_tilde(), cache.vc_tilde);
+                                 y_tilde, cache.vc_tilde, &state.mutable_u_tilde());
 
     if (converged) {
       if (parameters_.verbosity_level >= 1) {
@@ -487,7 +566,7 @@ std::pair<T, T> AdmmSolver<T>::CalcTildeScaledMomentumError(const VectorX<T>& v_
 template <typename T>
 bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g_tilde, 
                         const VectorX<T>& z_tilde, const VectorX<T>& sigma_tilde, 
-                        const VectorX<T>& y_tilde, const VectorX<T>& vc_tilde){
+                        const VectorX<T>& y_tilde, const VectorX<T>& vc_tilde, VectorX<T>* u_tilde){
   using std::max;
 
   const double& abs_tol = parameters_.abs_tolerance;
@@ -520,19 +599,22 @@ bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g_tilde,
   }
 
   // //dynamic rho code:
-  // if (parameters_.dynamic_rho) {
-  //   if (r_norm > r_s_ratio* s_norm && rho < 10000) {
-  //     rho *= rho_factor;
-  //     *u_tilde = *u_tilde/rho_factor;
-  //     rho_changed = true;
-  //   }
+  if (parameters_.dynamic_rho) {
+    if (r_norm > r_s_ratio* s_norm && rho < 500) {
+      rho *= rho_factor;
+      *u_tilde = *u_tilde/rho_factor;
+      rho_changed = true;
+    }
 
-  //   if(r_norm < r_s_ratio * s_norm && rho > 1e-10) {
-  //     rho = rho/rho_factor;
-  //     *u_tilde = *u_tilde * rho_factor;
-  //     rho_changed = true;
-  //   }
-  // }
+    if(s_norm > r_s_ratio * r_norm && rho > 1e-5) {
+      rho = rho/rho_factor;
+      *u_tilde = *u_tilde * rho_factor;
+      rho_changed = true;
+    }
+  }
+  if (rho_changed == true){
+    parameters_.num_rho_changed +=1;
+  }
   if (r_norm < bound && s_norm < bound)
     return true;
 
@@ -617,22 +699,41 @@ template <typename T>
 void AdmmSolver<T>::LogOneTimestepHistory(
     const std::string& file_name, const int& step) const {
   const std::vector<AdmmSolverStats>& stats_hist =this->get_stats_history();
-  const auto& stats = stats_hist[step];
+  const auto& stats = stats_hist[step-1];
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
       //error metrics
       "r_norm", "s_norm",
       //parameters
-      "rho"
+      "rho", "num_rho_changed",
+      //variable data:
+      "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
+      "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
+      "sigma_tilde_5", "sigma_tilde_6", "sigma_tilde_7", "sigma_tilde_8",
+      "z_tilde_0", "z_tilde_1","z_tilde_2","z_tilde_3","z_tilde_4",
+      "z_tilde_5", "z_tilde_6", "z_tilde_7", "z_tilde_8",
+      "u_tilde_0", "u_tilde_1","u_tilde_2","u_tilde_3","u_tilde_4",
+      "u_tilde_5", "u_tilde_6", "u_tilde_7", "u_tilde_8"
       );
   for (const auto& metrics:stats.iteration_metrics) {
     file << fmt::format(
-    "{} {} {}\n",
+    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
     // Error metrics.
     metrics.r_norm_l2,
     metrics.s_norm_l2,
-    metrics.rho
+    metrics.rho, parameters_.num_rho_changed,
+    metrics.v_tilde[0], metrics.v_tilde[1], metrics.v_tilde[2],
+    metrics.v_tilde[3], metrics.v_tilde[4], metrics.v_tilde[5],
+    metrics.sigma_tilde[0], metrics.sigma_tilde[1], metrics.sigma_tilde[2],
+    metrics.sigma_tilde[3], metrics.sigma_tilde[4], metrics.sigma_tilde[5],
+    metrics.sigma_tilde[6], metrics.sigma_tilde[7], metrics.sigma_tilde[8],
+    metrics.z_tilde[0], metrics.z_tilde[1], metrics.z_tilde[2],
+    metrics.z_tilde[3], metrics.z_tilde[4], metrics.z_tilde[5],
+    metrics.z_tilde[6], metrics.z_tilde[7], metrics.z_tilde[8],
+    metrics.u_tilde[0], metrics.u_tilde[1], metrics.u_tilde[2],
+    metrics.u_tilde[3], metrics.u_tilde[4], metrics.u_tilde[5],
+    metrics.u_tilde[6], metrics.u_tilde[7], metrics.u_tilde[8]
     );
   }
   file.close();
@@ -675,45 +776,62 @@ void AdmmSolver<T>::LogIterationsHistory(
   }
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
       "num_iters",
-      //force output related:
-      "sigma_x_sum", "sigma_y_sum", "sigma_z_sum",
       //parameters
-      "rho",
+      "rho", "num_rho_changed",
       //error metrics
       "r_norm", "s_norm",
-      //time metric
-      "solve_for_x_time", "solve_for_z_u_time", "total_time", "preproc_time"
+      //norms:
+      "v_tilde_norm", "sigma_tilde_norm", "z_tilde_norm", "u_tilde_norm",
+      //variable data:
+      "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
+      "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
+      "sigma_tilde_5", "sigma_tilde_6", "sigma_tilde_7", "sigma_tilde_8",
+      "z_tilde_0", "z_tilde_1","z_tilde_2","z_tilde_3","z_tilde_4",
+      "z_tilde_5", "z_tilde_6", "z_tilde_7", "z_tilde_8",
+      "u_tilde_0", "u_tilde_1","u_tilde_2","u_tilde_3","u_tilde_4",
+      "u_tilde_5", "u_tilde_6", "u_tilde_7", "u_tilde_8"
       );
 
   for (const auto& s : stats_hist) {
     const auto& metrics = s.iteration_metrics.back();
+    const auto& metrics_0 = s.iteration_metrics[0];
     // const int iters = s.iteration_metrics.size();
     const int iters = s.num_iters;
     // Compute some totals and averages.
 
     file << fmt::format(
-        "{} {} {} {} {} {} {} {} {} {} {}\n",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
         iters,
-        //force output related: 
-        metrics.sigma_x_sum, metrics.sigma_y_sum, metrics.sigma_z_sum,
         //parameters
         metrics.rho,
+        parameters_.num_rho_changed,
         // Error metrics.
         metrics.r_norm_l2,
         metrics.s_norm_l2,
-        //time metrics:
-        s.solve_for_x_time,
-        s.solve_for_z_u_time,
-        s.total_time, 
-        s.preproc_time
+        //norms:
+        metrics_0.v_tilde_norm, metrics_0.sigma_tilde_norm, metrics_0.z_tilde_norm, metrics_0.u_tilde_norm,
+        //initialization related:
+        metrics_0.v_tilde[0], metrics_0.v_tilde[1], metrics_0.v_tilde[2],
+        metrics_0.v_tilde[3], metrics_0.v_tilde[4], metrics_0.v_tilde[5],
+        metrics_0.sigma_tilde[0], metrics_0.sigma_tilde[1], metrics_0.sigma_tilde[2],
+        metrics_0.sigma_tilde[3], metrics_0.sigma_tilde[4], metrics_0.sigma_tilde[5],
+        metrics_0.sigma_tilde[6], metrics_0.sigma_tilde[7], metrics_0.sigma_tilde[8],
+        metrics_0.z_tilde[0], metrics_0.z_tilde[1], metrics_0.z_tilde[2],
+        metrics_0.z_tilde[3], metrics_0.z_tilde[4], metrics_0.z_tilde[5],
+        metrics_0.z_tilde[6], metrics_0.z_tilde[7], metrics_0.z_tilde[8],
+        metrics_0.u_tilde[0], metrics_0.u_tilde[1], metrics_0.u_tilde[2],
+        metrics_0.u_tilde[3], metrics_0.u_tilde[4], metrics_0.u_tilde[5],
+        metrics_0.u_tilde[6], metrics_0.u_tilde[7], metrics_0.u_tilde[8]
+
+
         );
   }
   file.close();

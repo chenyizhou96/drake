@@ -2,8 +2,16 @@
 
 #include <iostream>
 #include <memory>
+#include <fstream>
+#include <iostream>
+#include<Eigen/Dense>
+#include <numeric>
+#include <string>
 
 #include <Eigen/SparseCore>
+ 
+using namespace std;
+using namespace Eigen;
 
 #include "drake/multibody/contact_solvers/block_sparse_matrix.h"
 #include "drake/multibody/contact_solvers/contact_solver.h"
@@ -39,6 +47,7 @@ struct AdmmSolverParameters {
   double rho_factor{2.0};
   double r_s_ratio{10.0};
   bool rho_changed{false};
+  int num_rho_changed{0};
   
   // Use supernodal algebra for the linear solver.
   bool use_supernodal_solver{true};
@@ -71,6 +80,19 @@ struct AdmmSolverIterationMetrics {
   double sigma_z_sum{0.0};
 
   double rho{0.0};
+
+
+  //For debuggin  purpose only, delete later
+  VectorX<double> v_tilde;
+  VectorX<double> sigma_tilde;
+  VectorX<double> u_tilde;
+  VectorX<double> z_tilde;
+  
+  double v_tilde_norm{0.0};
+  double sigma_tilde_norm{0.0};
+  double z_tilde_norm{0.0};
+  double u_tilde_norm{0.0};
+
 
   // Some norms.
   //double vc_norm{0.0};
@@ -182,6 +204,28 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
   void LogOneTimestepHistory(const std::string& file_name, const int& step) const;
 
+  void SaveMatrix(const string& fileName, const MatrixX<T>&  matrix) {
+    const static IOFormat CSVFormat(FullPrecision, DontAlignCols, ", ", "\n");
+ 
+    ofstream file(fileName);
+    if (file.is_open())
+    {
+        file << matrix.format(CSVFormat);
+        file.close();
+    }
+  }
+
+  void SaveVector(const string& fileName, const VectorX<T>&  vector) {
+    const static IOFormat CSVFormat(FullPrecision, DontAlignCols, ", ", "\n");
+ 
+    ofstream file(fileName);
+    if (file.is_open())
+    {
+        file << vector.format(CSVFormat);
+        file.close();
+    }
+  }
+
 
  private:
   // This is not a real cache in the CS sense (i.e. there is no tracking of
@@ -291,7 +335,8 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   void CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, const double& rho, std::vector<MatrixX<T>>* G) const;
 
   bool CheckConvergenceCriteria(const VectorX<T>& g_tilde, const VectorX<T>& z_tilde, 
-                      const VectorX<T>& sigma_tilde, const VectorX<T>& y_tilde, const VectorX<T>& vc_tilde); 
+                      const VectorX<T>& sigma_tilde, const VectorX<T>& y_tilde, 
+                      const VectorX<T>& vc_tilde, VectorX<T>* u_tilde); 
   
   //calculate normal/tangential rate for utilde/ztilde, for debugging purpose only
   //u should be of length nc3 and slope of length nc
