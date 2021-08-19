@@ -8,6 +8,8 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <Eigen/Dense>
+#include <vector>
 
 #include "fmt/format.h"
 
@@ -33,7 +35,29 @@ using Eigen::VectorXd;
 
 using Eigen::SparseMatrix;
 using Eigen::SparseVector;
+using Eigen::Matrix;
 //using drake::multibody::contact_solvers::internal::BlockSparseMatrix;
+
+//using namespace Eigen;
+
+template<typename M>
+M load_csv (const std::string & path) {
+    std::ifstream indata;
+    indata.open(path);
+    std::string line;
+    std::vector<double> values;
+    uint rows = 0;
+    while (std::getline(indata, line)) {
+        std::stringstream lineStream(line);
+        std::string cell;
+        while (std::getline(lineStream, cell, ',')) {
+            values.push_back(std::stod(cell));
+        }
+        ++rows;
+    }
+    return Map<const VectorX<double>>(values.data(), rows, values.size()/rows);
+}
+
 
 template <typename T>
 AdmmSolver<T>::AdmmSolver()
@@ -51,40 +75,40 @@ void AdmmSolver<T>::InitializeD(const int& nc, const std::vector<MatrixX<T>>& Mt
                       const BlockSparseMatrix<T>& Jblock, VectorX<T>* D) {
 
   const int nv = Mt.size();
+  const auto& R = data_.R;
   std::vector<Eigen::LLT<MatrixX<T>>> M_ldlt;
   M_ldlt.resize(nv);
   std::vector<Matrix3<T>> W(nc, Matrix3<T>::Zero());
-  if (!parameters_.scale_with_R) {
-    for (int iv = 0; iv< nv; iv++) {
-      const auto& Mt_local = Mt[iv];
-      M_ldlt[iv] = Mt_local.llt();
-    }
 
-    for (auto [p, t, Jpt] : Jblock.get_blocks()) {
-      //loop over 3 row blocks each time 
-      for (int k = 0; k < Jpt.rows()/3; k ++) {
-        const int i0 = Jblock.row_start(p) + k*3;
-        //DRAKE_DEMAND(k*3 < Jpt.rows());
-        const auto& Jkt = Jpt.block(k*3, 0, 3, Jpt.cols());
-        W[i0/3] += Jkt*M_ldlt[t].solve(Jkt.transpose());
-        //DRAKE_DEMAND(i0/3 < nc);
-      }
-    }
-
-    for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
-      (*D)[ic3] = W[ic].norm()/3;
-      (*D)[ic3+1] = W[ic].norm()/3;
-      (*D)[ic3+2] = W[ic].norm()/3;
-      if (parameters_.verbosity_level >= 3) {
-        if ((*D)[ic3] == 0) {
-          PRINT_VAR(W[ic]);
-          PRINT_VAR(ic);
-        }
-      }
-    }
-  } else {
-    *D = data_.R;
+  for (int iv = 0; iv< nv; iv++) {
+    const auto& Mt_local = Mt[iv];
+    M_ldlt[iv] = Mt_local.llt();
   }
+
+  for (auto [p, t, Jpt] : Jblock.get_blocks()) {
+    //loop over 3 row blocks each time 
+    for (int k = 0; k < Jpt.rows()/3; k ++) {
+      const int i0 = Jblock.row_start(p) + k*3;
+      //DRAKE_DEMAND(k*3 < Jpt.rows());
+      const auto& Jkt = Jpt.block(k*3, 0, 3, Jpt.cols());
+      W[i0/3] += Jkt*M_ldlt[t].solve(Jkt.transpose());
+      //DRAKE_DEMAND(i0/3 < nc);
+    }
+  }
+
+  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
+    (*D)[ic3] = W[ic].norm()/3 + R[ic3];
+    (*D)[ic3+1] = W[ic].norm()/3 + R[ic3+1];
+    (*D)[ic3+2] = W[ic].norm()/3 + R[ic3+2];
+    if (parameters_.verbosity_level >= 3) {
+      if ((*D)[ic3] == 0) {
+        PRINT_VAR(W[ic]);
+        PRINT_VAR(ic);
+      }
+    }
+  }
+
+ 
   if (parameters_.verbosity_level >= 3) {
     PRINT_VAR(*D);
   }
@@ -92,76 +116,50 @@ void AdmmSolver<T>::InitializeD(const int& nc, const std::vector<MatrixX<T>>& Mt
 }
 
 template <typename T>
-void AdmmSolver<T>::Preprocess( TildeData* tilde_data) {
+void AdmmSolver<T>::Preprocess( ProcessedData* processed_data) {
   const int nv = data_.nv;
   const int nc = data_.nc;
+  const int nc3 = 3*nc;
   const auto& Jblock = data_.Jblock;
   const auto& Mblock = data_.Mblock;
   const auto& Mt = data_.Mt;
   const auto& vc_stab = data_.vc_stab;
   const auto& v_star = data_.dynamics_data->get_v_star();
   const auto& D = data_.D;
+  const auto& Dinv = data_.Dinv;
   const auto& Dinv_sqrt = data_.Dinv_sqrt;
-  
-  //H = diag(M);
-  VectorX<T> H(nv);
-  //Note:can't use varied length for template segment, maybe use Map from eigen?
-  //doing simple loops for now
-  for (int i = 0, ic = 0; i < Mt.size(); i++, ic+= Mt[i].rows()) {
-    for (int j  = 0; j < Mt[i].rows(); j++) {
-       H(ic+j) = Mt[i](j, j);
-    }
+  const auto& R = data_.R;
+
+  //Mt_inverse = Mt^-1
+  processed_data -> Mt_inverse.resize(Mt.size());
+  for (int i = 0; i < Mt.size(); i++) {
+    processed_data -> Mt_inverse[i] = Mt[i].inverse();
   }
-
-  tilde_data -> H = H;
   
-  //Mt_tilde = T^-0.5 Mt T^-0.5
-  VectorX<double> Hinv_sqrt = H.cwiseSqrt().cwiseInverse();
-  tilde_data -> Mt_tilde.resize(Mt.size());
-  for (int i = 0, ic = 0; i < Mt.size(); i++, ic+= Mt[i].rows()) {
-    int length = Mt[i].rows();
-    const auto& Hinv_sqrt_ic = Hinv_sqrt.template segment(ic, length);
-    tilde_data -> Mt_tilde[i] = Hinv_sqrt_ic.asDiagonal()*Mt[i]*Hinv_sqrt_ic.asDiagonal();
-  }
+  processed_data-> R_tilde = R.cwiseProduct(Dinv);
 
-  //M_tilde_v_star_tilde = H^-0.5 M vstar
-  VectorX<double> Mv_star(nv);
-  Mblock.Multiply(v_star, &Mv_star);
-  tilde_data -> M_tilde_v_star_tilde = Hinv_sqrt.cwiseProduct(Mv_star);
-  
-  //vc_stab_tilde = D^-0.5 vc_stab
-  tilde_data -> vc_stab_tilde = Dinv_sqrt.cwiseProduct(vc_stab);
+  //r_tilde = D^-0.5 (J v_star - v_hat)
+  VectorX<T> J_v_star(nc3);
+  Jblock.Multiply(v_star, &J_v_star);
+  processed_data -> r_tilde = Dinv_sqrt.cwiseProduct(J_v_star - vc_stab);
 
-  //v_star_tilde = H^0.5 v_star;
-  tilde_data -> v_star_tilde = H.cwiseSqrt().cwiseProduct(v_star);
-  
-  //Mblock_tilde = T^-0.5 M T^-0.5
-  BlockSparseMatrixBuilder<T> Mblock_tilde_builder(Mblock.block_rows(), Mblock.block_cols(),
-                                      Mblock.num_blocks());
-  for (auto [p, t, Mpt] : Mblock.get_blocks()) {
-    const int i0 = Mblock.row_start(p);
-    const int j0 = Mblock.col_start(p);
-    const auto& Hinv_sqrt_p = Hinv_sqrt.template segment(i0, Mpt.rows());
-    const auto& Hinv_sqrt_t = Hinv_sqrt.template segment(j0, Mpt.cols());
-
-    MatrixX<T> Mpt_tilde = Hinv_sqrt_p.asDiagonal()*Mpt*Hinv_sqrt_t.asDiagonal();
-    Mblock_tilde_builder.PushBlock(p, t, Mpt_tilde);
-  }
-  tilde_data -> Mblock_tilde = Mblock_tilde_builder.Build();
-
-  //Jblock_tilde = D^-0.5 J T^-0.5
-  BlockSparseMatrixBuilder<T> Jblock_tilde_builder(Jblock.block_rows(), Jblock.block_cols(),
+  //Jblock_tilde_transpose = J^TD^-0.5
+  BlockSparseMatrixBuilder<T> Jblock_tilde_transpose_builder(Jblock.block_cols(), Jblock.block_rows(),
                                       Jblock.num_blocks());
   for (auto [p, t, Jpt] : Jblock.get_blocks()) {
     const int i0 = Jblock.row_start(p);
-    const int j0 = Jblock.col_start(p);
     const auto& Dinv_sqrt_p = Dinv_sqrt.template segment(i0, Jpt.rows());
-    const auto& Hinv_sqrt_p = Hinv_sqrt.template segment(j0, Jpt.cols());
-
-    MatrixX<T> Jpt_tilde = Dinv_sqrt_p.asDiagonal()*Jpt*Hinv_sqrt_p.asDiagonal();
-    Jblock_tilde_builder.PushBlock(p, t, Jpt_tilde);
+    MatrixX<T> Jpt_tilde_transpose = (Dinv_sqrt_p.asDiagonal()*Jpt).transpose();
+    Jblock_tilde_transpose_builder.PushBlock(t, p, Jpt_tilde_transpose);
   }
-  tilde_data -> Jblock_tilde = Jblock_tilde_builder.Build();
+  processed_data -> Jblock_tilde_transpose = Jblock_tilde_transpose_builder.Build();
+
+  BlockSparseMatrixBuilder<T> Mblock_inverse_builder(Mblock.block_cols(), Mblock.block_rows(),
+                                      Mblock.num_blocks());
+  for (auto [p, t, Mpt] : Mblock.get_blocks()) {
+    Mblock_inverse_builder.PushBlock(p, t, Mpt.inverse());
+  }
+  processed_data -> Mblock_inverse = Mblock_inverse_builder.Build();
 
 }
 
@@ -175,6 +173,16 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   using std::pow;
   using std::sqrt;
 
+  //pseudocode for the whole process:
+  //InitializeD    <- initialize D, D
+  //Preprocess    <- calculate J_block_transpose_tilde, M_t_inverse, R_tilde_rho_I as blocks, r_tilde
+  //initialization
+  //loop:
+  //three steps for solving 
+  //checkforconvergence
+  //end of loop
+  //postprocessing       <- calculates v
+
   // Starts a timer for the overall execution time of the solver.
   Timer global_timer;
 
@@ -185,6 +193,8 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const int nc = contact_data.num_contacts();
   const int nc3 = 3 * nc;
   const auto& Rinv = data_.Rinv;
+  const auto& J = data_.Jblock;
+  const auto& v_star = data_.dynamics_data->get_v_star();
 
   // The primal method needs the inverse dynamics data.
   DRAKE_DEMAND(dynamics_data.has_inverse_dynamics());
@@ -247,6 +257,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const auto& Dinv_sqrt = data_.Dinv_sqrt;
   const auto& D_sqrt = data_.D_sqrt;
   const auto& rho = parameters_.rho;
+  const auto& vc_stab = data_.vc_stab;
 
   // PRINT_VAR(D.size() / 3);
   // PRINT_VAR(D.transpose());
@@ -255,91 +266,82 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   //each entry of D must be positive
   DRAKE_DEMAND(D.minCoeff() > 0);
   
-  // //code for logging initial info: 
-  // SaveVector("v_guess.csv", v_guess);
-  // PRINT_VAR(v_guess);
-  // SaveVector("vhat.csv", data_.vc_stab);
-  // PRINT_VAR(data_.vc_stab);
-  // SaveVector("vstar.csv", data_.dynamics_data->get_v_star());
-  // PRINT_VAR(data_.dynamics_data->get_v_star());
-  // SaveMatrix("M.csv", data_.Mt[0]);
-  // PRINT_VAR(data_.Mt[0]);
-  // for (auto [p ,t, Jpt] : data_.Jblock.get_blocks()) {
-  //     SaveMatrix("J.csv", Jpt);
-  //     PRINT_VAR(Jpt)
-  // }
-  // SaveVector("R.csv", data_.R);
-  // PRINT_VAR(data_.R);
-  // SaveVector("mu.csv", data_.contact_data->get_mu());
-  // PRINT_VAR(data_.contact_data->get_mu());
-  // SaveVector("D.csv", D);
-  // PRINT_VAR(D);
+  this-> Preprocess(&processed_data_);
 
-
-
-
-
-  this-> Preprocess(&tilde_data_);
-
-  const auto& J_tilde = tilde_data_.Jblock_tilde;
-  const auto& H = tilde_data_.H;
-  const auto& M_tilde = tilde_data_.Mblock_tilde;
-  const auto& Mt_tilde = tilde_data_.Mt_tilde;
-  const auto& vc_stab_tilde = tilde_data_.vc_stab_tilde;
+  const auto& J_tilde_transpose = processed_data_.Jblock_tilde_transpose;
+  const auto& r_tilde = processed_data_.r_tilde;
+  const auto& Mt_inverse = processed_data_.Mt_inverse;
   const auto& Rinv_sqrt = data_.Rinv.cwiseSqrt();
+  const auto& M_inverse = processed_data_.Mblock_inverse;
   const auto& R = data_.R;
   const auto& R_sqrt = data_.R.cwiseSqrt();
-  const auto& M_tilde_v_star_tilde = tilde_data_.M_tilde_v_star_tilde;
+  const auto& R_tilde = processed_data_.R_tilde;
+
 
   if (parameters_.verbosity_level >= 5) {
-    PRINT_VAR(data_.Mt[0]);
-    PRINT_VAR(Mt_tilde[0]);
-    PRINT_VAR(H);
-    for (auto [p ,t, Jpt] : data_.Jblock.get_blocks()) {
+    PRINT_VAR(data_.vc_stab);
+    PRINT_VAR(R_tilde);
+    PRINT_VAR(D);
+    PRINT_VAR(R);
+    for (auto [p, t, Jpt] : data_.Jblock.get_blocks()) {
       PRINT_VAR(Jpt);
     }
-    for (auto [p ,t, Jtildept] : J_tilde.get_blocks()) {
-      PRINT_VAR(Jtildept);
+    for (auto [p, t, J_tilde_transpose_pt] : J_tilde_transpose.get_blocks()) {
+      PRINT_VAR(J_tilde_transpose_pt);
     }
-    for (auto [p ,t, Mtildept] : M_tilde.get_blocks()) {
-      PRINT_VAR(Mtildept);
-    }
-    for (auto [p ,t, Mpt] : data_.Mblock.get_blocks()) {
+    for (auto [p, t, Mpt]: data_.Mblock.get_blocks()){
       PRINT_VAR(Mpt);
     }
-    PRINT_VAR(vc_stab_tilde);
-    PRINT_VAR(data_.vc_stab);
+    for (auto [p, t, M_inversept]: processed_data_.Mblock_inverse.get_blocks()) {
+      PRINT_VAR(M_inversept);
+    }
+    for (int i = 0; i< data_.Mt.size(); i++) {
+      PRINT_VAR(data_.Mt[i]);
+      PRINT_VAR(Mt_inverse[i]);
+    }
+    PRINT_VAR(r_tilde);
+    PRINT_VAR(v_star);
   }
 
 
-  //Initialization goes here
-  //TODO: make a separate function?
-  //initialize v_tilde = H^0.5 v_guess
-  state.mutable_v_tilde() = H.cwiseSqrt().cwiseProduct(v_guess);
-  //sigma_tilde =  Proj_mutilde(-R^-0.5D^0.5 (J_tilde v_tilde - vhat_tilde))
-  J_tilde.Multiply(state.v_tilde(), &mutable_cache.vc_tilde);
-  VectorX<double> y_tilde = -Rinv_sqrt.cwiseProduct(D_sqrt.cwiseProduct(cache.vc_tilde-vc_stab_tilde));
-  const auto& mu = data_.contact_data->get_mu();
-  ConvexSolverBase<double>::ProjectIntoDWarpedCone(parameters_.soft_tolerance, 
-                                     mu, Rinv, y_tilde, 
-                                      &state.mutable_sigma_tilde());
-  //sigma = 1/sqrt(R) * sigma_tilde
-  if (!parameters_.initialize_force){
+  const double original_rho = parameters_.rho;
+
+  
+  if (!parameters_.use_stiction_guess){
+    J.Multiply(v_guess, &mutable_cache.vc);
+    VectorX<double> y_tilde = -Rinv_sqrt.cwiseProduct(cache.vc-vc_stab);
+    const auto& mu = data_.contact_data->get_mu();
+    ConvexSolverBase<double>::ProjectIntoDWarpedCone(parameters_.soft_tolerance, 
+                                      mu, Rinv, y_tilde, 
+                                        &state.mutable_sigma_tilde());
+    state.mutable_sigma_tilde() = D_sqrt.cwiseProduct(Rinv_sqrt.cwiseProduct(state.sigma_tilde()));
+    
+    if (!parameters_.initialize_force){
+      state.mutable_sigma_tilde() = VectorX<double>::Zero(nc3);
+    }
+
+    //z_tilde = sigma_tilde
+    state.mutable_z_tilde() = state.sigma_tilde();
+
+    //u_tilde = -(delta_v_c_tilde+R_tilde sigma_tilde + r_tilde)/rho
+    VectorX<double> temp1(nv);
+    J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
+    VectorX<double> temp2(nv);
+    M_inverse.Multiply(temp1, &temp2);
+    J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
+    auto& u_tilde = state.mutable_u_tilde();
+    u_tilde = -(cache.delta_v_c_tilde+R_tilde.cwiseProduct(state.sigma_tilde()) + r_tilde)/rho;
+  } else {
+    //initialize according to stiction criterion, first set rho = 0 then change it back
     state.mutable_sigma_tilde() = VectorX<double>::Zero(nc3);
+    state.mutable_z_tilde() = state.sigma_tilde();
+    state.mutable_u_tilde() = state.sigma_tilde();
+    parameters_.rho = 0;
+    
+
   }
-
-  //z_tilde = J_tilde v_tilde - vhat_tilde + D^-0.5 R^0.5*sigma_tilde
-  state.mutable_z_tilde() = cache.vc_tilde - vc_stab_tilde + Dinv_sqrt.cwiseProduct(
-                          R_sqrt.cwiseProduct(state.sigma_tilde()));
-
-  state.mutable_u_tilde() = -D_sqrt.cwiseProduct(
-                          Rinv_sqrt.cwiseProduct(state.sigma_tilde()))/rho;
   
-  
-  // SaveVector("z_guess.csv", D_sqrt.cwiseProduct(state.z_tilde()));
-  // PRINT_VAR(state.z_tilde());
-  // SaveVector("u_guess.csv", Dinv_sqrt.cwiseProduct(state.u_tilde()));
-  // PRINT_VAR(state.u_tilde());
+
 
 
   stats_.preproc_time += preproc_timer.Elapsed();
@@ -348,17 +350,24 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   // of M and J.
   std::unique_ptr<conex::SuperNodalSolver> solver;
   Timer construction_timer;
-  solver = std::make_unique<conex::SuperNodalSolver>(
-      J_tilde.block_rows(), J_tilde.get_blocks(), Mt_tilde);
   stats_.supernodal_construction_time = construction_timer.Elapsed();
   
   if (parameters_.verbosity_level >=3) {
-      PRINT_VAR(state.v_tilde().norm());
+      PRINT_VAR(state.sigma_tilde());
       PRINT_VAR(state.sigma_tilde().norm());
       PRINT_VAR(state.z_tilde().norm());
       PRINT_VAR(state.u_tilde().norm());
       PRINT_VAR(data_.D.minCoeff());
     }
+  VectorX<double> z_tilde_old = state.z_tilde();
+
+  VectorX<double> z_tilde_star;
+  VectorX<double> u_tilde_star;
+
+  if (parameters_.do_max_iterations) {
+    z_tilde_star = load_csv<VectorX<double>>("z_tilde_star.csv");
+    u_tilde_star = load_csv<VectorX<double>>("u_tilde_star.csv");
+  }
 
   // Start Newton iterations.
   int k = 0;
@@ -376,11 +385,11 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     if (parameters_.log_stats) {
       stats_.iteration_metrics.push_back(metrics);
       //collect data to see if scaling is right:
-      stats_.iteration_metrics.back().v_tilde = state.v_tilde();
+      stats_.iteration_metrics.back().v_tilde = state.sigma_tilde();
       stats_.iteration_metrics.back().sigma_tilde = state.sigma_tilde();
       stats_.iteration_metrics.back().u_tilde = state.u_tilde();
       stats_.iteration_metrics.back().z_tilde = state.z_tilde();
-      stats_.iteration_metrics.back().v_tilde_norm = state.v_tilde().norm();
+      stats_.iteration_metrics.back().v_tilde_norm = 0;
       stats_.iteration_metrics.back().sigma_tilde_norm = state.sigma_tilde().norm();
       stats_.iteration_metrics.back().z_tilde_norm = state.z_tilde().norm();
       stats_.iteration_metrics.back().u_tilde_norm = state.u_tilde().norm();
@@ -389,79 +398,125 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     
     local_timer.Reset();
     if (k == 0 || parameters_.rho_changed){
-      this -> InitializeSolveForVData(state, solver.get());
+      std::vector<MatrixX<double>>R_tilde_rho_I(nc3, MatrixX<double>(1,1));
+      for (int i = 0; i < nc3; i++) {
+        R_tilde_rho_I[i] << R_tilde[i] + rho;
+      }
+      solver = std::make_unique<conex::SuperNodalSolver>(
+        J_tilde_transpose.block_rows(), J_tilde_transpose.get_blocks(), R_tilde_rho_I);
+
+      solver->SetWeightMatrix(Mt_inverse);
+      if (parameters_.verbosity_level > 1) {
+        PRINT_VAR(solver -> FullMatrix());
+        PRINT_VAR(parameters_.rho);
+      }
+      solver->Factor();
       parameters_.rho_changed = false;
+      if (parameters_.rho == 0) {
+        parameters_.rho = original_rho;
+        parameters_.rho_changed = true;
+      }
+    }
+
+    
+    //step to solve for sigma_tilde:
+    VectorX<double> rhs = rho*(state.z_tilde()-state.u_tilde())-r_tilde;
+    state.mutable_sigma_tilde() = solver->Solve(rhs);
+
+
+
+    VectorX<double> temp1(nv);
+    J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
+    VectorX<double> temp2(nv);
+    //PRINT_VAR(temp1);
+    M_inverse.Multiply(temp1, &temp2);
+    //PRINT_VAR(temp2);
+    J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
+    VectorX<double> lhs = cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde()) +rho*state.sigma_tilde();
+    double residue = (lhs - rhs).norm()/max(rhs.norm(),lhs.norm());
+    if (k == 0 && parameters_.use_stiction_guess){
+      double initial_residue = (cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde())+
+                                    r_tilde).norm()/max(rhs.norm(),lhs.norm());
+      PRINT_VAR(initial_residue);
+      DRAKE_DEMAND(initial_residue < 1.0E-14);
+    } else {
+      //PRINT_VAR(residue);
+      DRAKE_DEMAND(residue < 1.0E-14);
     }
     
-    //step to solve for v:
-    VectorX<double> h = state.z_tilde()-state.u_tilde()+ vc_stab_tilde;
-    h = rho* D.cwiseProduct((D+ rho* R).cwiseInverse().cwiseProduct(h));
-    VectorX<double> rhs(nv);
-    J_tilde.MultiplyByTranspose(h, &rhs);
-    rhs += M_tilde_v_star_tilde;
-    state.mutable_v_tilde() = solver->Solve(rhs);
     
-    //update vc_tilde:
-    J_tilde.Multiply(state.v_tilde(), &mutable_cache.vc_tilde); 
-
-    //step to solve for sigma:
-    state.mutable_sigma_tilde() = rho* R_sqrt.cwiseProduct(
-                D_sqrt.cwiseProduct((D+ rho*R).cwiseInverse().cwiseProduct(
-                  state.z_tilde() - state.u_tilde() + vc_stab_tilde - cache.vc_tilde)));
-    
-    //calculate g_tilde for the ease of life:
-    VectorX<double> g_tilde = cache.vc_tilde + Dinv_sqrt.cwiseProduct(
-                          R_sqrt.cwiseProduct(state.sigma_tilde())) - vc_stab_tilde;
+    z_tilde_old = state.z_tilde();
+    if(parameters_.verbosity_level > 1){
+      PRINT_VAR(rhs);
+      PRINT_VAR(z_tilde_old);
+      PRINT_VAR(state.sigma_tilde());
+    }
 
     //step for z_tilde:
-    const auto& mu_star = mu.cwiseInverse();
+    const auto& mu = data_.contact_data->get_mu();
     ConvexSolverBase<double>::ProjectIntoDWarpedCone(parameters_.soft_tolerance, 
-                                      mu_star, data_.D, g_tilde+state.u_tilde(), 
+                                      mu, data_.Dinv, state.sigma_tilde()+state.u_tilde(), 
                                       &state.mutable_z_tilde());
+
+    if(parameters_.verbosity_level > 1){
+      PRINT_VAR(state.z_tilde());
+      PRINT_VAR(state.sigma_tilde());
+    }
 
     if (parameters_.verbosity_level >=4) {
       if (false) {
         PRINT_VAR(k);
         PRINT_VAR(state.z_tilde());
         PRINT_VAR(state.u_tilde());
-        PRINT_VAR(g_tilde+state.u_tilde());
-        PRINT_VAR(mu_star);
+        PRINT_VAR(state.sigma_tilde());
+        PRINT_VAR(mu);
         PRINT_VAR(data_.D);
-        for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
-          const auto& sum_ic = g_tilde+state.u_tilde().template segment<3>(ic3);
-          const auto& sum_ic_1 = sum_ic.template head<2>();
-          double ratio = sum_ic[2]/sum_ic_1.norm();
-          double new_ratio = sum_ic[2]/sqrt(pow(sum_ic_1.norm(),2)+1.0E-14);
-          PRINT_VAR(ratio);
-          PRINT_VAR(new_ratio);
-        }
         //SaveVector("z_tilde_big.csv", state.z_tilde());
       }
     }
 
     //step for u tilde:
-    state.mutable_u_tilde() += g_tilde - state.z_tilde();
-
-    const auto [mom_l2, mom_max] =
-        this->CalcTildeScaledMomentumError( state.v_tilde(), state.sigma_tilde());
+    state.mutable_u_tilde() += state.sigma_tilde() - state.z_tilde();
     
-    if (parameters_.verbosity_level >= 4) {
-      PRINT_VAR(mom_l2);
-      PRINT_VAR(mom_max);
+    if (parameters_.verbosity_level >=2){
+      PRINT_VAR(mu);
+      VectorX<double> sigma = Dinv_sqrt.cwiseProduct(state.sigma_tilde());
+      VectorX<double> J_t_sigma(nv);
+      VectorX<double> J_v(nc3);
+      J.MultiplyByTranspose(sigma, &J_t_sigma);
+      VectorX<double> velocity(nv);
+      M_inverse.Multiply(J_t_sigma, &velocity);
+      velocity += v_star;
+      if (k == 0) {
+        PRINT_VAR(velocity);
+      }
+      J.Multiply(velocity, &J_v);
+      if (k == 0){
+        PRINT_VAR(data_.R);
+        PRINT_VAR(J_v);
+        PRINT_VAR(vc_stab);
+        VectorX<double> other_sigma = data_.Rinv.cwiseProduct(J_v - vc_stab);
+        PRINT_VAR(other_sigma);
+        PRINT_VAR(sigma);
+        PRINT_VAR(state.sigma_tilde());
+        PRINT_VAR(state.z_tilde());
+        PRINT_VAR(state.u_tilde());
+      }
     }
-    //TODO: make these two variables dimensionless
-    //DRAKE_DEMAND(mom_l2 < 2.0E-14);
-    //DRAKE_DEMAND(mom_max < 2.0E-14);
+
+    
+    stats_.iteration_metrics.back().V = pow((state.u_tilde() - u_tilde_star).norm(), 2)
+                                        + rho* pow((state.z_tilde() - z_tilde_star).norm(), 2);
 
     double uz_product = state.u_tilde().dot(state.z_tilde());
-    VectorX<double> dv_tilde = state.v_tilde()-tilde_data_.v_star_tilde;
-    VectorX<double> M_tilde_dv_tilde(nv);
-    M_tilde.Multiply(dv_tilde, &M_tilde_dv_tilde);
-    double l = M_tilde_dv_tilde.dot(dv_tilde);
-    l += state.sigma_tilde().dot(state.sigma_tilde());
+    VectorX<double> N_tilde_sigma_tilde = lhs-rho*state.sigma_tilde();
+    double l =  r_tilde.dot(r_tilde);
     uz_product /= l;
     //IMPORTANT: uz_product is machine epsilon if soft_tolerance is machine epsilon
-    //DRAKE_DEMAND(uz_product < parameters_.rel_tolerance);
+    if (uz_product > 1.0E-13){
+      PRINT_VAR(uz_product);
+    }
+    DRAKE_DEMAND(uz_product < 1.0E-13);
 
 
     if (parameters_.verbosity_level >=4) {
@@ -471,17 +526,26 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
                                       +state.sigma_tilde()).norm();
       if (false) {
         PRINT_VAR(k);
-        PRINT_VAR(s_norm);
         PRINT_VAR(state.z_tilde());
         PRINT_VAR(state.u_tilde());
-        PRINT_VAR(g_tilde);
       }
     }
+
+    // VectorX<double> temp1(nv);
+    // J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
+    // VectorX<double> temp2(nv);
+    // M_inverse.Multiply(temp1, &temp2);
+    // J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
+     mutable_cache.delta_v_c = D_sqrt.cwiseProduct(cache.delta_v_c_tilde);
     
     VectorX<double> y_tilde = rho*state.u_tilde();
-    const bool converged =
-        this -> CheckConvergenceCriteria(g_tilde, state.z_tilde(), state.sigma_tilde(),
-                                 y_tilde, cache.vc_tilde, &state.mutable_u_tilde());
+     bool converged =
+        this -> CheckConvergenceCriteria(state.sigma_tilde(), state.z_tilde(), z_tilde_old, 
+                                        cache.delta_v_c,&state.mutable_u_tilde());
+    if (parameters_.do_max_iterations) {
+      converged = false;
+    } 
+    
 
     if (converged) {
       if (parameters_.verbosity_level >= 1) {
@@ -497,14 +561,21 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   if (k == parameters_.max_iterations) {
     stats_history_.push_back(stats_);
     this -> LogFailureData("failure_log.dat");
+    //SaveVector("z_tilde_star.csv", state.z_tilde());
+    //SaveVector("u_tilde_star.csv", state.u_tilde());
   }
   
 
   if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
   
-  VectorX<double> v = H.cwiseInverse().cwiseSqrt().cwiseProduct(state.v_tilde());
-  VectorX<double> sigma = Rinv.cwiseSqrt().cwiseProduct(state.sigma_tilde());
-  VectorX<double> vc = D_sqrt.cwiseProduct(cache.vc_tilde);
+  VectorX<double> Jt_sigma(nv);
+  VectorX<double> v(nv);
+  VectorX<double> sigma = Dinv_sqrt.cwiseProduct(state.sigma_tilde());
+  J.MultiplyByTranspose(sigma, &Jt_sigma);
+  M_inverse.Multiply(Jt_sigma, &v);
+  v += v_star;
+  VectorX<double> vc(nc3);
+  J.Multiply(v, &vc);
 
   //  auto& last_metrics = stats_.iteration_metrics.back();
   // last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
@@ -528,68 +599,40 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   return ContactSolverStatus::kSuccess;
 }
 
-template<typename T>
-std::pair<T, T> AdmmSolver<T>::CalcTildeScaledMomentumError(const VectorX<T>& v_tilde,
-                               const VectorX<T>& sigma_tilde) const{
-  const int nv = data_.nv;
-  const auto& v_star = data_.dynamics_data->get_v_star();
-  const auto& Djac = data_.Djac;
-  const auto& M_tilde = tilde_data_.Mblock_tilde;
-  const auto& D_sqrt = data_.D_sqrt;
-  const auto& Rinv_sqrt = data_.Rinv.cwiseSqrt();
-  const auto& J_tilde = tilde_data_.Jblock_tilde;
-  const auto& M_tilde_v_star_tilde = tilde_data_.M_tilde_v_star_tilde;
-  const auto& H = tilde_data_.H;
-
-  VectorX<T> M_tilde_v_tilde(nv);
-  M_tilde.Multiply(v_tilde, &M_tilde_v_tilde);
-  VectorX<T> momentum_balance = M_tilde_v_tilde - M_tilde_v_star_tilde;
-
-  VectorX<T> sigma_tilde_term(nv);
-
-  J_tilde.MultiplyByTranspose(D_sqrt.cwiseProduct(Rinv_sqrt.cwiseProduct(sigma_tilde)), &sigma_tilde_term);
-  momentum_balance -= sigma_tilde_term;
-  momentum_balance = H.cwiseSqrt().cwiseProduct(momentum_balance);
-
-  // Scale momentum balance using the mass matrix's Jacobi preconditioner so
-  // that all entries have the same units and we can compute a fair error
-  // metric.
-  momentum_balance = Djac.asDiagonal() * momentum_balance;
-
-  const T mom_l2 = momentum_balance.norm();
-  const T mom_max = momentum_balance.template lpNorm<Eigen::Infinity>();
-  return std::make_pair(mom_l2, mom_max);
-
-}
 
 
 template <typename T>
-bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& g_tilde, 
-                        const VectorX<T>& z_tilde, const VectorX<T>& sigma_tilde, 
-                        const VectorX<T>& y_tilde, const VectorX<T>& vc_tilde, VectorX<T>* u_tilde){
+bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& sigma_tilde, 
+                        const VectorX<T>& z_tilde, const VectorX<T>& z_tilde_old, 
+                        const VectorX<T> delta_v_c, VectorX<T>* u_tilde){
   using std::max;
 
   const double& abs_tol = parameters_.abs_tolerance;
   const double& rel_tol = parameters_.rel_tolerance;
+  const int nc = data_.nc;
+  const int nc3 = 3*nc;
   const auto& D_sqrt = data_.D_sqrt;
   const auto& Dinv_sqrt = data_.Dinv_sqrt;
   const auto& R = data_.R;
   const auto& R_sqrt = R.cwiseSqrt();
   const auto& vc_stab = data_.vc_stab;
   const auto& r_s_ratio = parameters_.r_s_ratio;
+  const auto& J = data_.Jblock;
   auto& rho = parameters_.rho;
   const auto& rho_factor = parameters_.rho_factor;
   auto& rho_changed = parameters_.rho_changed;
-  const auto& vc = D_sqrt.cwiseProduct(vc_tilde);
+  const auto& v_star = data_.dynamics_data->get_v_star();
   
-  //r_norm = ||D^0.5(g_tilde-z_tilde)||
-  double r_norm = D_sqrt.cwiseProduct((g_tilde-z_tilde)).norm();
+  VectorX<T> v_c(nc3);
+  J.Multiply(v_star, &v_c);
+  v_c += delta_v_c;
+  //r_norm = ||D^0.5(sigma_tilde-z_tilde)||
+  double r_norm = D_sqrt.cwiseProduct((sigma_tilde-z_tilde)).norm();
   
   //s_norm = ||R^0.5 (sigma_tilde + D^-0.5 R^0.5 y_tilde)||
-  double s_norm = R_sqrt.cwiseProduct(Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(y_tilde))
-                                      +sigma_tilde).norm();
+  double s_norm = rho* D_sqrt.cwiseProduct((z_tilde_old-z_tilde)).norm();
   
-  const double bound = abs_tol+rel_tol*max(vc.norm(), vc_stab.norm());
+  const double bound = abs_tol+rel_tol*max(v_c.norm(), vc_stab.norm());
 
   if (parameters_.log_stats) {
     stats_.iteration_metrics.back().r_norm_l2 = r_norm;
@@ -664,16 +707,25 @@ void AdmmSolver<T>::CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R,
 }
 
 template <typename T>
-void AdmmSolver<T>::InitializeSolveForVData(const State& s, conex::SuperNodalSolver* solver) const {
+void AdmmSolver<T>::InitializeSolveForSigmaTildeData(const State& s, conex::SuperNodalSolver* solver) const {
   auto& cache = s.mutable_cache();
+  const int nc = data_.nc;
+  const int nc3 = nc*3;
   const auto& D = data_.D;
   const auto& R = data_.R;
+  const auto& Mt_inverse = processed_data_.Mt_inverse;
   const double& rho = parameters_.rho;
+  const auto& J_tilde_transpose = processed_data_.Jblock_tilde_transpose;
+  const auto& R_tilde = processed_data_.R_tilde;
 
-  this->CalcGMatrix(D, R, rho, &cache.G);
-  solver->SetWeightMatrix(cache.G);
+  std::vector<MatrixX<T>>R_tilde_rho_I(nc3, MatrixX<T>(1,1));
+  //R_tilde_rho_I[0] = processed_data_.R_tilde.asDiagonal()+ rho*MatrixX<T>::Identity(nc3, nc3);
+
+  //solver = std::make_unique<conex::SuperNodalSolver>(
+    //J_tilde_transpose.block_rows(), J_tilde_transpose.get_blocks(), R_tilde_rho_I);
+
+  solver->SetWeightMatrix(Mt_inverse);
   solver->Factor();
-  //cache.Finv = (R+ rho * R.cwiseProduct(R.cwiseProduct(D.cwiseInverse()))).cwiseInverse();
 
 }
 
@@ -748,17 +800,18 @@ void AdmmSolver<T>::LogFailureData(
   const auto& stats = stats_hist.back();
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {}\n",
+      "{} {} {} {}\n",
       //error metrics
-      "r_norm", "s_norm", "bound"
+      "r_norm", "s_norm", "bound", "V"
       );
   for (const auto& metrics:stats.iteration_metrics) {
     file << fmt::format(
-    "{} {} {}\n",
+    "{} {} {} {}\n",
     // Error metrics.
     metrics.r_norm_l2,
     metrics.s_norm_l2,
-    metrics.bound
+    metrics.bound,
+    metrics.V
     );
   }
   file.close();
@@ -776,7 +829,7 @@ void AdmmSolver<T>::LogIterationsHistory(
   }
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
@@ -786,15 +839,15 @@ void AdmmSolver<T>::LogIterationsHistory(
       //error metrics
       "r_norm", "s_norm",
       //norms:
-      "v_tilde_norm", "sigma_tilde_norm", "z_tilde_norm", "u_tilde_norm",
+      "v_tilde_norm", "sigma_tilde_norm", "z_tilde_norm", "u_tilde_norm"
       //variable data:
-      "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
-      "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
-      "sigma_tilde_5", "sigma_tilde_6", "sigma_tilde_7", "sigma_tilde_8",
-      "z_tilde_0", "z_tilde_1","z_tilde_2","z_tilde_3","z_tilde_4",
-      "z_tilde_5", "z_tilde_6", "z_tilde_7", "z_tilde_8",
-      "u_tilde_0", "u_tilde_1","u_tilde_2","u_tilde_3","u_tilde_4",
-      "u_tilde_5", "u_tilde_6", "u_tilde_7", "u_tilde_8"
+      // "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
+      // "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
+      // "sigma_tilde_5", "sigma_tilde_6", "sigma_tilde_7", "sigma_tilde_8",
+      // "z_tilde_0", "z_tilde_1","z_tilde_2","z_tilde_3","z_tilde_4",
+      // "z_tilde_5", "z_tilde_6", "z_tilde_7", "z_tilde_8",
+      // "u_tilde_0", "u_tilde_1","u_tilde_2","u_tilde_3","u_tilde_4",
+      // "u_tilde_5", "u_tilde_6", "u_tilde_7", "u_tilde_8"
       );
 
   for (const auto& s : stats_hist) {
@@ -805,7 +858,7 @@ void AdmmSolver<T>::LogIterationsHistory(
     // Compute some totals and averages.
 
     file << fmt::format(
-        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+        "{} {} {} {} {} {} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
@@ -817,19 +870,19 @@ void AdmmSolver<T>::LogIterationsHistory(
         metrics.r_norm_l2,
         metrics.s_norm_l2,
         //norms:
-        metrics_0.v_tilde_norm, metrics_0.sigma_tilde_norm, metrics_0.z_tilde_norm, metrics_0.u_tilde_norm,
+        metrics_0.v_tilde_norm, metrics_0.sigma_tilde_norm, metrics_0.z_tilde_norm, metrics_0.u_tilde_norm
         //initialization related:
-        metrics_0.v_tilde[0], metrics_0.v_tilde[1], metrics_0.v_tilde[2],
-        metrics_0.v_tilde[3], metrics_0.v_tilde[4], metrics_0.v_tilde[5],
-        metrics_0.sigma_tilde[0], metrics_0.sigma_tilde[1], metrics_0.sigma_tilde[2],
-        metrics_0.sigma_tilde[3], metrics_0.sigma_tilde[4], metrics_0.sigma_tilde[5],
-        metrics_0.sigma_tilde[6], metrics_0.sigma_tilde[7], metrics_0.sigma_tilde[8],
-        metrics_0.z_tilde[0], metrics_0.z_tilde[1], metrics_0.z_tilde[2],
-        metrics_0.z_tilde[3], metrics_0.z_tilde[4], metrics_0.z_tilde[5],
-        metrics_0.z_tilde[6], metrics_0.z_tilde[7], metrics_0.z_tilde[8],
-        metrics_0.u_tilde[0], metrics_0.u_tilde[1], metrics_0.u_tilde[2],
-        metrics_0.u_tilde[3], metrics_0.u_tilde[4], metrics_0.u_tilde[5],
-        metrics_0.u_tilde[6], metrics_0.u_tilde[7], metrics_0.u_tilde[8]
+        // metrics_0.v_tilde[0], metrics_0.v_tilde[1], metrics_0.v_tilde[2],
+        // metrics_0.v_tilde[3], metrics_0.v_tilde[4], metrics_0.v_tilde[5],
+        // metrics_0.sigma_tilde[0], metrics_0.sigma_tilde[1], metrics_0.sigma_tilde[2],
+        // metrics_0.sigma_tilde[3], metrics_0.sigma_tilde[4], metrics_0.sigma_tilde[5],
+        // metrics_0.sigma_tilde[6], metrics_0.sigma_tilde[7], metrics_0.sigma_tilde[8],
+        // metrics_0.z_tilde[0], metrics_0.z_tilde[1], metrics_0.z_tilde[2],
+        // metrics_0.z_tilde[3], metrics_0.z_tilde[4], metrics_0.z_tilde[5],
+        // metrics_0.z_tilde[6], metrics_0.z_tilde[7], metrics_0.z_tilde[8],
+        // metrics_0.u_tilde[0], metrics_0.u_tilde[1], metrics_0.u_tilde[2],
+        // metrics_0.u_tilde[3], metrics_0.u_tilde[4], metrics_0.u_tilde[5],
+        // metrics_0.u_tilde[6], metrics_0.u_tilde[7], metrics_0.u_tilde[8]
 
 
         );

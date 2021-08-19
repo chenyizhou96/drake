@@ -109,7 +109,8 @@ DEFINE_bool(dynamic_rho, false,
 DEFINE_double(rho, 1.0, "Initial value of rho.");
 DEFINE_double(inertia_factor, 1.0, "Multiplies the box inertia.");
 DEFINE_bool(make_planar, true, "Make a truly planar case.");
-
+DEFINE_bool(use_stiction_guess, false, "whether to use stiction initialization in admm solver");
+DEFINE_bool(do_max_iterations, false, "whether to use max iterations for admm solver");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -411,6 +412,8 @@ int do_main() {
     params.initialize_force = FLAGS_initialize_force;
     params.max_iterations = FLAGS_max_iterations;
     params.log_stats = true;
+    params.use_stiction_guess = FLAGS_use_stiction_guess;
+    params.do_max_iterations = FLAGS_do_max_iterations;
     params.soft_tolerance = FLAGS_soft_tolerance;
     params.scale_with_R = FLAGS_scale_with_R;
     params.rho_factor = FLAGS_rho_factor;
@@ -525,7 +528,7 @@ int do_main() {
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
 
-      admm_solver->LogOneTimestepHistory("one_step_log.dat", 3);
+      admm_solver->LogOneTimestepHistory("one_step_log.dat",1);
 
     }
   }
