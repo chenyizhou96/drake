@@ -101,6 +101,10 @@ DEFINE_int32(solver_type, 2, "define solver type, 0 for TAMSI, 1 for unconstrain
 DEFINE_double(radius0, 0.05, "radius or side length/2 for the smallest sphere/box");
 DEFINE_bool(random_rotation, false, "enable random rotation for the stacked objects");
 DEFINE_int32(max_iterations, 100, "max iterations for the admm solver, for debugging purpose");
+DEFINE_double(alpha, 1.0, "over relaxation parameter for admm");
+DEFINE_bool(dynamic_rho, false,
+            "whether or not to use dynamic rho for admm solver");
+DEFINE_int32(log_step, 1, "for admm:single step to take log of");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -511,8 +515,8 @@ int do_main() {
     params.Rt_factor = FLAGS_rt_factor;
     params.max_iterations = FLAGS_max_iterations;
     params.rho = 1;
-    params.dynamic_rho = true;
-
+    params.dynamic_rho = FLAGS_dynamic_rho;
+    params.alpha = FLAGS_alpha;
     params.use_supernodal_solver = FLAGS_use_supernodal;
     params.verbosity_level = FLAGS_verbosity_level;
     params.log_stats = true;
@@ -549,8 +553,76 @@ int do_main() {
   SetObjectsIntoAPile(plant, Vector3d(0, 0, 0), pile1,
                       &plant_context);
 
+  std::ofstream log_file("solution.dat");
+  log_file << fmt::format("time x_1 y_1 z_1 f1_x f1_y f1_z v1_x v1_y v1_z f2_x f2_y f2_z v2_x v2_y v2_z f3_x f3_y f3_z v3_x v3_y v3_z f4_x f4_y f4_z v4_x v4_y v4_z f5_x f5_y f5_z v5_x v5_y v5_z\n");  
+
   auto simulator =
       MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
+
+
+  simulator->set_monitor([&plant, &pile1, &log_file](
+                             const systems::Context<double>& root_context) {
+    const auto& context = plant.GetMyContextFromRoot(root_context);
+    
+    const auto& body1 = plant.get_body(pile1[0]);
+    // Pose of body B in the world frame W.
+    const math::RigidTransformd& X_WB =
+        plant.EvalBodyPoseInWorld(context, body1);
+
+    // Position of body B in the world frame W.
+    const Vector3d p_WB = X_WB.translation();
+
+
+
+    const auto& contact_results =
+        plant.get_contact_results_output_port().Eval<ContactResults<double>>(
+            context);
+
+    // Compute resultant force on body B, expressedin world frame W.
+    // NOTE: You could compute the resultant torque also since you have the
+    // point of application p_WC.
+    std::vector<Vector3d> forces(pile1.size(),Vector3d::Zero());
+    const int num_objects = pile1.size();
+    for (int j = 0; j < num_objects; j++) {
+      auto& body_index = pile1[j];
+      for (int i = 0; i < contact_results.num_point_pair_contacts(); ++i) {
+        const PointPairContactInfo<double>& point_pair_info =
+            contact_results.point_pair_contact_info(i);
+        if (point_pair_info.bodyB_index() == body_index){
+          forces[j] += point_pair_info.contact_force();
+        } else if (point_pair_info.bodyA_index() == body_index) {
+          forces[j] -= point_pair_info.contact_force();
+        }
+      }
+    }
+    
+    //get velocities of all objects
+    std::vector<Vector3d> velocities(num_objects, Vector3d::Zero());
+    for (int i = 0; i < num_objects; i++) {
+      const auto& body = plant.get_body(pile1[i]);
+      auto& velocity = plant.EvalBodySpatialVelocityInWorld(context, body);
+      for (int j = 0; j < 3; j++){
+        velocities[i][j] = velocity[j+3];
+      }
+    }
+
+    log_file << fmt::format("{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+                            context.get_time(), p_WB.x(), p_WB.y(), p_WB.z(),
+                            forces[0].x(), forces[0].y(), forces[0].z(),
+                            velocities[0].x(), velocities[0].y(), velocities[0].z(),
+                            forces[1].x(), forces[1].y(), forces[1].z(),
+                            velocities[1].x(), velocities[1].y(), velocities[1].z(),
+                            forces[2].x(), forces[2].y(), forces[2].z(),
+                            velocities[2].x(), velocities[2].y(), velocities[2].z(),
+                            forces[3].x(), forces[3].y(), forces[3].z(),
+                            velocities[3].x(), velocities[3].y(), velocities[3].z(),
+                            forces[4].x(), forces[4].y(), forces[4].z(),
+                            velocities[4].x(), velocities[4].y(), velocities[4].z()
+                            );
+
+    return systems::EventStatus::Succeeded();
+  });
+
 
   clock::time_point sim_start_time = clock::now();
   CALLGRIND_START_INSTRUMENTATION;
@@ -572,6 +644,7 @@ int do_main() {
     }
     if (admm_solver) {
       admm_solver->LogIterationsHistory("log.dat");
+      admm_solver->LogOneTimestepHistory("one_step_log.dat",FLAGS_log_step);
     }
     // primal_solver->LogSolutionHistory("sol_hist.dat");
   }

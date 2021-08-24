@@ -67,6 +67,8 @@ struct AdmmSolverParameters {
   bool scale_with_R{false};
 
   bool use_stiction_guess{false};
+
+  double alpha{1.0};   //over relaxation parameter
 };
 
 struct AdmmSolverIterationMetrics {
@@ -334,7 +336,7 @@ class AdmmSolver final : public ConvexSolverBase<T> {
 
   bool CheckConvergenceCriteria(const VectorX<T>& sigma_tilde, 
                         const VectorX<T>& z_tilde, const VectorX<T>& z_tilde_old, 
-                        const VectorX<T> delta_v_c, VectorX<T>* u_tilde); 
+                        const VectorX<T>& delta_v_c, VectorX<T>* u_tilde); 
   
   //calculate normal/tangential rate for utilde/ztilde, for debugging purpose only
   //u should be of length nc3 and slope of length nc

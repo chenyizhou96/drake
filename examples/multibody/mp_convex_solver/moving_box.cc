@@ -111,6 +111,7 @@ DEFINE_double(inertia_factor, 1.0, "Multiplies the box inertia.");
 DEFINE_bool(make_planar, true, "Make a truly planar case.");
 DEFINE_bool(use_stiction_guess, false, "whether to use stiction initialization in admm solver");
 DEFINE_bool(do_max_iterations, false, "whether to use max iterations for admm solver");
+DEFINE_double(alpha, 1.0, "over relaxation parameter for admm");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -416,6 +417,7 @@ int do_main() {
     params.do_max_iterations = FLAGS_do_max_iterations;
     params.soft_tolerance = FLAGS_soft_tolerance;
     params.scale_with_R = FLAGS_scale_with_R;
+    params.alpha = FLAGS_alpha;
     params.rho_factor = FLAGS_rho_factor;
     admm_solver->set_parameters(params);
   }
@@ -462,7 +464,7 @@ int do_main() {
   FixAppliedForce(box_index, external_force, &plant, &plant_context);
 
   std::ofstream log_file("solution.dat");
-  log_file << fmt::format("time x y z roll pitch yaw fx fy fz\n");  
+  log_file << fmt::format("time x y z roll pitch yaw fx fy fz f_1x f_1y f_1z f_2x f_2y f_2z f_3x f_3y f_3z\n");  
 
   auto simulator =
       MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
@@ -492,16 +494,22 @@ int do_main() {
     // NOTE: You could compute the resultant torque also since you have the
     // point of application p_WC.
     Vector3d f_WB = Vector3d::Zero();
+    std::vector<Vector3d> point_forces(contact_results.num_point_pair_contacts());
     for (int i = 0; i < contact_results.num_point_pair_contacts(); ++i) {
       const PointPairContactInfo<double>& point_pair_info =
           contact_results.point_pair_contact_info(i);
       f_WB += point_pair_info.contact_force();
+      point_forces[i] = point_pair_info.contact_force();
     }
 
-    log_file << fmt::format("{} {} {} {} {} {} {} {} {} {}\n",
+    log_file << fmt::format("{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
                             context.get_time(), p_WB.x(), p_WB.y(), p_WB.z(),
                             rpy.roll_angle(), rpy.pitch_angle(),
-                            rpy.yaw_angle(), f_WB.x(), f_WB.y(), f_WB.z());
+                            rpy.yaw_angle(), f_WB.x(), f_WB.y(), f_WB.z(),
+                            point_forces[0].x(), point_forces[0].y(), point_forces[0].z(),
+                            point_forces[1].x(), point_forces[1].y(), point_forces[1].z(),
+                            point_forces[2].x(), point_forces[2].y(), point_forces[2].z()
+                            );
 
     return systems::EventStatus::Succeeded();
   });

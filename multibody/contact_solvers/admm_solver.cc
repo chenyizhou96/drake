@@ -173,16 +173,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   using std::pow;
   using std::sqrt;
 
-  //pseudocode for the whole process:
-  //InitializeD    <- initialize D, D
-  //Preprocess    <- calculate J_block_transpose_tilde, M_t_inverse, R_tilde_rho_I as blocks, r_tilde
-  //initialization
-  //loop:
-  //three steps for solving 
-  //checkforconvergence
-  //end of loop
-  //postprocessing       <- calculates v
-
   // Starts a timer for the overall execution time of the solver.
   Timer global_timer;
 
@@ -259,10 +249,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const auto& rho = parameters_.rho;
   const auto& vc_stab = data_.vc_stab;
 
-  // PRINT_VAR(D.size() / 3);
-  // PRINT_VAR(D.transpose());
-  // PRINT_VAR(rho);
-
   //each entry of D must be positive
   DRAKE_DEMAND(D.minCoeff() > 0);
   
@@ -276,6 +262,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const auto& R = data_.R;
   const auto& R_sqrt = data_.R.cwiseSqrt();
   const auto& R_tilde = processed_data_.R_tilde;
+  const double alpha = parameters_.alpha;
 
 
   if (parameters_.verbosity_level >= 5) {
@@ -333,17 +320,13 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     u_tilde = -(cache.delta_v_c_tilde+R_tilde.cwiseProduct(state.sigma_tilde()) + r_tilde)/rho;
   } else {
     //initialize according to stiction criterion, first set rho = 0 then change it back
+    //TODO: first lines redundant, resize them when state is created
     state.mutable_sigma_tilde() = VectorX<double>::Zero(nc3);
     state.mutable_z_tilde() = state.sigma_tilde();
     state.mutable_u_tilde() = state.sigma_tilde();
     parameters_.rho = 0;
-    
-
   }
   
-
-
-
   stats_.preproc_time += preproc_timer.Elapsed();
 
   // Super nodal solver is constructed once per time-step to reuse structure
@@ -361,9 +344,9 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     }
   VectorX<double> z_tilde_old = state.z_tilde();
 
+  //Only for calculating lyaponov function:
   VectorX<double> z_tilde_star;
   VectorX<double> u_tilde_star;
-
   if (parameters_.do_max_iterations) {
     z_tilde_star = load_csv<VectorX<double>>("z_tilde_star.csv");
     u_tilde_star = load_csv<VectorX<double>>("u_tilde_star.csv");
@@ -406,10 +389,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
         J_tilde_transpose.block_rows(), J_tilde_transpose.get_blocks(), R_tilde_rho_I);
 
       solver->SetWeightMatrix(Mt_inverse);
-      if (parameters_.verbosity_level > 1) {
-        PRINT_VAR(solver -> FullMatrix());
-        PRINT_VAR(parameters_.rho);
-      }
       solver->Factor();
       parameters_.rho_changed = false;
       if (parameters_.rho == 0) {
@@ -424,25 +403,25 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     state.mutable_sigma_tilde() = solver->Solve(rhs);
 
 
-
-    VectorX<double> temp1(nv);
-    J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
-    VectorX<double> temp2(nv);
-    //PRINT_VAR(temp1);
-    M_inverse.Multiply(temp1, &temp2);
-    //PRINT_VAR(temp2);
-    J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
-    VectorX<double> lhs = cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde()) +rho*state.sigma_tilde();
-    double residue = (lhs - rhs).norm()/max(rhs.norm(),lhs.norm());
-    if (k == 0 && parameters_.use_stiction_guess){
-      double initial_residue = (cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde())+
-                                    r_tilde).norm()/max(rhs.norm(),lhs.norm());
-      PRINT_VAR(initial_residue);
-      DRAKE_DEMAND(initial_residue < 1.0E-14);
-    } else {
-      //PRINT_VAR(residue);
-      DRAKE_DEMAND(residue < 1.0E-14);
-    }
+    //debugging code for the linear system:
+    // VectorX<double> temp1(nv);
+    // J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
+    // VectorX<double> temp2(nv);
+    // //PRINT_VAR(temp1);
+    // M_inverse.Multiply(temp1, &temp2);
+    // //PRINT_VAR(temp2);
+    // J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
+    // VectorX<double> lhs = cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde()) +rho*state.sigma_tilde();
+    // double residue = (lhs - rhs).norm()/max(rhs.norm(),lhs.norm());
+    // if (k == 0 && parameters_.use_stiction_guess){
+    //   double initial_residue = (cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde())+
+    //                                 r_tilde).norm()/max(rhs.norm(),lhs.norm());
+    //   PRINT_VAR(initial_residue);
+    //   DRAKE_DEMAND(initial_residue < 1.0E-14);
+    // } else {
+    //   //PRINT_VAR(residue);
+    //   //DRAKE_DEMAND(residue < 1.0E-14);
+    // }
     
     
     z_tilde_old = state.z_tilde();
@@ -451,11 +430,14 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
       PRINT_VAR(z_tilde_old);
       PRINT_VAR(state.sigma_tilde());
     }
+    
+    //over-relaxation
+    VectorX<double> sigma_tilde_hat = alpha*state.sigma_tilde() + (1-alpha)*state.z_tilde();
 
     //step for z_tilde:
     const auto& mu = data_.contact_data->get_mu();
     ConvexSolverBase<double>::ProjectIntoDWarpedCone(parameters_.soft_tolerance, 
-                                      mu, data_.Dinv, state.sigma_tilde()+state.u_tilde(), 
+                                      mu, data_.Dinv, sigma_tilde_hat+state.u_tilde(), 
                                       &state.mutable_z_tilde());
 
     if(parameters_.verbosity_level > 1){
@@ -476,7 +458,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     }
 
     //step for u tilde:
-    state.mutable_u_tilde() += state.sigma_tilde() - state.z_tilde();
+    state.mutable_u_tilde() += sigma_tilde_hat - state.z_tilde();
     
     if (parameters_.verbosity_level >=2){
       PRINT_VAR(mu);
@@ -495,7 +477,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
         PRINT_VAR(data_.R);
         PRINT_VAR(J_v);
         PRINT_VAR(vc_stab);
-        VectorX<double> other_sigma = data_.Rinv.cwiseProduct(J_v - vc_stab);
+        VectorX<double> other_sigma = -data_.Rinv.cwiseProduct(J_v - vc_stab);
         PRINT_VAR(other_sigma);
         PRINT_VAR(sigma);
         PRINT_VAR(state.sigma_tilde());
@@ -508,40 +490,37 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     stats_.iteration_metrics.back().V = pow((state.u_tilde() - u_tilde_star).norm(), 2)
                                         + rho* pow((state.z_tilde() - z_tilde_star).norm(), 2);
 
-    double uz_product = state.u_tilde().dot(state.z_tilde());
-    VectorX<double> N_tilde_sigma_tilde = lhs-rho*state.sigma_tilde();
-    double l =  r_tilde.dot(r_tilde);
-    uz_product /= l;
+    // double uz_product = state.u_tilde().dot(state.z_tilde());
+    // VectorX<double> N_tilde_sigma_tilde = lhs-rho*state.sigma_tilde();
+    // double l =  r_tilde.dot(r_tilde);
+    // uz_product /= l;
     //IMPORTANT: uz_product is machine epsilon if soft_tolerance is machine epsilon
-    if (uz_product > 1.0E-13){
-      PRINT_VAR(uz_product);
-    }
-    DRAKE_DEMAND(uz_product < 1.0E-13);
+
+    //DRAKE_DEMAND(uz_product < 1.0E-13);
 
 
-    if (parameters_.verbosity_level >=4) {
-      const auto& y_tilde = rho* state.u_tilde();
-      const auto& R_sqrt = data_.R.cwiseSqrt();
-      double s_norm = R_sqrt.cwiseProduct(Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(y_tilde))
-                                      +state.sigma_tilde()).norm();
-      if (false) {
-        PRINT_VAR(k);
-        PRINT_VAR(state.z_tilde());
-        PRINT_VAR(state.u_tilde());
-      }
-    }
+    // if (parameters_.verbosity_level >=4) {
+    //   const auto& y_tilde = rho* state.u_tilde();
+    //   const auto& R_sqrt = data_.R.cwiseSqrt();
+    //   double s_norm = R_sqrt.cwiseProduct(Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(y_tilde))
+    //                                   +state.sigma_tilde()).norm();
+    //   if (false) {
+    //     PRINT_VAR(k);
+    //     PRINT_VAR(state.z_tilde());
+    //     PRINT_VAR(state.u_tilde());
+    //   }
+    // }
 
     // VectorX<double> temp1(nv);
     // J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
     // VectorX<double> temp2(nv);
     // M_inverse.Multiply(temp1, &temp2);
     // J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
-     mutable_cache.delta_v_c = D_sqrt.cwiseProduct(cache.delta_v_c_tilde);
+    mutable_cache.delta_v_c = D_sqrt.cwiseProduct(cache.delta_v_c_tilde);
     
-    VectorX<double> y_tilde = rho*state.u_tilde();
-     bool converged =
-        this -> CheckConvergenceCriteria(state.sigma_tilde(), state.z_tilde(), z_tilde_old, 
-                                        cache.delta_v_c,&state.mutable_u_tilde());
+    bool converged =
+      this -> CheckConvergenceCriteria(state.sigma_tilde(), state.z_tilde(), z_tilde_old, 
+                                      cache.delta_v_c,&state.mutable_u_tilde());
     if (parameters_.do_max_iterations) {
       converged = false;
     } 
@@ -576,6 +555,11 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   v += v_star;
   VectorX<double> vc(nc3);
   J.Multiply(v, &vc);
+  if (parameters_.verbosity_level>2) {
+    PRINT_VAR(v);
+    PRINT_VAR(sigma);
+    PRINT_VAR(vc_stab);
+  }
 
   //  auto& last_metrics = stats_.iteration_metrics.back();
   // last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
@@ -604,7 +588,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 template <typename T>
 bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& sigma_tilde, 
                         const VectorX<T>& z_tilde, const VectorX<T>& z_tilde_old, 
-                        const VectorX<T> delta_v_c, VectorX<T>* u_tilde){
+                        const VectorX<T>& delta_v_c, VectorX<T>* u_tilde){
   using std::max;
 
   const double& abs_tol = parameters_.abs_tolerance;
@@ -649,7 +633,7 @@ bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& sigma_tilde,
       rho_changed = true;
     }
 
-    if(s_norm > r_s_ratio * r_norm && rho > 1e-5) {
+    if(s_norm > r_s_ratio * r_norm && rho > 1e-3) {
       rho = rho/rho_factor;
       *u_tilde = *u_tilde * rho_factor;
       rho_changed = true;
@@ -754,9 +738,9 @@ void AdmmSolver<T>::LogOneTimestepHistory(
   const auto& stats = stats_hist[step-1];
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
       //error metrics
-      "r_norm", "s_norm",
+      "r_norm", "s_norm", "bound",
       //parameters
       "rho", "num_rho_changed",
       //variable data:
@@ -770,10 +754,10 @@ void AdmmSolver<T>::LogOneTimestepHistory(
       );
   for (const auto& metrics:stats.iteration_metrics) {
     file << fmt::format(
-    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
     // Error metrics.
     metrics.r_norm_l2,
-    metrics.s_norm_l2,
+    metrics.s_norm_l2, metrics.bound,
     metrics.rho, parameters_.num_rho_changed,
     metrics.v_tilde[0], metrics.v_tilde[1], metrics.v_tilde[2],
     metrics.v_tilde[3], metrics.v_tilde[4], metrics.v_tilde[5],
