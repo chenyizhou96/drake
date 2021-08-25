@@ -18,6 +18,7 @@
 #include "drake/math/roll_pitch_yaw.h"
 #include "drake/math/rotation_matrix.h"
 #include "drake/multibody/contact_solvers/unconstrained_primal_solver.h"
+#include "drake/multibody/contact_solvers/admm_solver.h"
 #include "drake/multibody/plant/compliant_contact_computation_manager.h"
 #include "drake/multibody/plant/contact_results_to_lcm.h"
 #include "drake/systems/analysis/implicit_integrator.h"
@@ -85,7 +86,6 @@ DEFINE_bool(visualize_multicontact, false,
 DEFINE_double(viz_period, 1.0 / 60.0, "Viz period.");
 
 // Discrete contact solver.
-DEFINE_bool(tamsi, false, "Use TAMSI (true) or new solver (false).");
 DEFINE_bool(use_supernodal, true,
             "Use supernodal algebra (true) or dense algebra (false).");
 DEFINE_int32(verbosity_level, 0,
@@ -97,6 +97,16 @@ DEFINE_double(ls_alpha_max, 1.5, "Maximum line search step.");
 DEFINE_double(rt_factor, 1.0e-3, "Rt_factor");
 DEFINE_double(abs_tol, 1.0e-6, "Absolute tolerance [m/s].");
 DEFINE_double(rel_tol, 1.0e-4, "Relative tolerance [-].");
+DEFINE_int32(solver_type, 2, "define solver type, 0 for TAMSI, 1 for unconstrained primal solver, 2 for admm solver");
+DEFINE_int32(max_iterations, 300, "max iterations for the admm solver, for debugging purpose");
+DEFINE_double(alpha, 1.0, "over relaxation parameter for admm");
+DEFINE_bool(dynamic_rho, false,
+            "whether or not to use dynamic rho for admm solver");
+DEFINE_int32(log_step, 1, "for admm:single step to take log of");
+DEFINE_bool(do_max_iterations, false, "whether to use max iterations for admm solver");
+DEFINE_double(rho, 1.0, "Initial value of rho.");
+DEFINE_double(soft_tolerance, 1.0E-7, "soft tolerance for the projection in admm solver");
+DEFINE_bool(write_star, false, "set true if to compute lyaponov function for admm");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -111,6 +121,13 @@ using drake::multibody::contact_solvers::internal::
     UnconstrainedPrimalSolverParameters;
 using drake::multibody::contact_solvers::internal::
     UnconstrainedPrimalSolverStats;
+using drake::multibody::contact_solvers::internal::AdmmSolver;
+using drake::multibody::contact_solvers::internal::
+    AdmmSolverIterationMetrics;
+using drake::multibody::contact_solvers::internal::
+    AdmmSolverParameters;
+using drake::multibody::contact_solvers::internal::
+    AdmmSolverStats;
 using Eigen::Translation3d;
 using Eigen::Vector3d;
 using clock = std::chrono::steady_clock;
@@ -151,7 +168,7 @@ const RigidBody<double>& AddBox(const std::string& name,
   // When the TAMSI solver is used, we simply let MultibodyPlant estimate
   // contact parameters based on penetration_allowance and stiction_tolerance.
   geometry::ProximityProperties props;
-  if (!FLAGS_tamsi || FLAGS_mbp_time_step == 0) {
+  if (FLAGS_solver_type != 0 || FLAGS_mbp_time_step == 0) {
     props.AddProperty(geometry::internal::kMaterialGroup,
                       geometry::internal::kPointStiffness, FLAGS_stiffness);
     props.AddProperty(geometry::internal::kMaterialGroup, "dissipation_rate",
@@ -224,7 +241,7 @@ const RigidBody<double>& AddBox(const std::string& name,
   if (add_box_collision) {
     auto id = plant->RegisterCollisionGeometry(
         box, X_BG, geometry::Box(LBx, LBy, LBz), name + "_collision", props);
-    box_geometry_ids.push_back(id);
+    box_geometry_ids.push_back(id);                                                                                                           
   }
   return box;
 }
@@ -285,7 +302,7 @@ const RigidBody<double>& AddSphere(const std::string& name, const double radius,
   const RigidBody<double>& ball = plant->AddRigidBody(name, M_Bcm);
 
   geometry::ProximityProperties props;
-  if (!FLAGS_tamsi || FLAGS_mbp_time_step == 0) {
+  if (FLAGS_solver_type != 0 || FLAGS_mbp_time_step == 0) {
     props.AddProperty(geometry::internal::kMaterialGroup,
                       geometry::internal::kPointStiffness, FLAGS_stiffness);
     props.AddProperty(geometry::internal::kMaterialGroup, "dissipation_rate",
@@ -452,14 +469,15 @@ int do_main() {
 
   plant.Finalize();
 
-  if (FLAGS_tamsi || FLAGS_mbp_time_step == 0) {
+  if (FLAGS_solver_type == 0 || FLAGS_mbp_time_step == 0) {
     plant.set_penetration_allowance(FLAGS_penetration_allowance);
     plant.set_stiction_tolerance(FLAGS_stiction_tolerance);
   }
 
   UnconstrainedPrimalSolver<double>* primal_solver{nullptr};
+  AdmmSolver<double>* admm_solver{nullptr};
   CompliantContactComputationManager<double>* manager{nullptr};
-  if (!FLAGS_tamsi) {
+  if (FLAGS_solver_type == 1) {
     auto owned_manager =
         std::make_unique<CompliantContactComputationManager<double>>();
     manager = owned_manager.get();
@@ -490,6 +508,32 @@ int do_main() {
           UnconstrainedPrimalSolverParameters::LineSearchMethod::kArmijo;
     }
     primal_solver->set_parameters(params);
+  }
+
+  if (FLAGS_solver_type == 2) {
+    auto owned_manager =
+        std::make_unique<CompliantContactComputationManager<double>>();
+    manager = owned_manager.get();
+    plant.SetDiscreteUpdateManager(std::move(owned_manager));
+    manager->set_contact_solver(std::make_unique<AdmmSolver<double>>());
+    admm_solver =
+        &manager->mutable_contact_solver<AdmmSolver>();
+
+    // N.B. These lines to set solver parameters are only needed if you want to
+    // experiment with these values. Default values should work ok for most
+    // applications. Thus, for your general case you can omit these lines.
+    AdmmSolverParameters params;
+    params.dynamic_rho = FLAGS_dynamic_rho;
+    params.rho = FLAGS_rho;
+    params.verbosity_level = FLAGS_verbosity_level;
+    params.max_iterations = FLAGS_max_iterations;
+    params.log_stats = true;
+    params.do_max_iterations = FLAGS_do_max_iterations;
+    params.soft_tolerance = FLAGS_soft_tolerance;
+    params.alpha = FLAGS_alpha;
+    params.write_star = FLAGS_write_star;
+    admm_solver->set_parameters(params);
+
   }
 
   fmt::print("Num positions: {:d}\n", plant.num_positions());
@@ -547,8 +591,13 @@ int do_main() {
 
   if (manager) {
     manager->LogStats("manager_log.dat");
-    primal_solver->LogIterationsHistory("log.dat");
-    // primal_solver->LogSolutionHistory("sol_hist.dat");
+    if (primal_solver) {
+      primal_solver->LogIterationsHistory("log.dat");
+    }
+    if (admm_solver) {
+      admm_solver->LogIterationsHistory("log.dat");
+      admm_solver->LogOneTimestepHistory("one_step_log.dat",FLAGS_log_step);
+    }
   }
 
   PrintSimulatorStatistics(*simulator);

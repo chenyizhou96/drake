@@ -105,6 +105,11 @@ DEFINE_double(alpha, 1.0, "over relaxation parameter for admm");
 DEFINE_bool(dynamic_rho, false,
             "whether or not to use dynamic rho for admm solver");
 DEFINE_int32(log_step, 1, "for admm:single step to take log of");
+DEFINE_bool(do_max_iterations, false, "whether to use max iterations for admm solver");
+DEFINE_double(rho, 1.0, "Initial value of rho.");
+DEFINE_double(soft_tolerance, 1.0E-7, "soft tolerance for the projection in admm solver");
+DEFINE_bool(write_star, false, "set true if to compute lyaponov function for admm");
+DEFINE_double(rho_factor, 2.0, "factor for increasing rho in admm");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -454,6 +459,9 @@ int do_main() {
     scene_graph.ExcludeCollisionsWithin(all_boxes);
   }
 
+  // Setting g = 10 makes my numbers simpler.
+  plant.mutable_gravity_field().set_gravity_vector(-10.0 * Vector3d::UnitZ());
+
   plant.Finalize();
 
   if (FLAGS_solver_type == 0 || FLAGS_mbp_time_step == 0) {
@@ -510,16 +518,16 @@ int do_main() {
     // experiment with these values. Default values should work ok for most
     // applications. Thus, for your general case you can omit these lines.
     AdmmSolverParameters params;
-    params.abs_tolerance = FLAGS_abs_tol;
-    params.rel_tolerance = FLAGS_rel_tol;
-    params.Rt_factor = FLAGS_rt_factor;
-    params.max_iterations = FLAGS_max_iterations;
-    params.rho = 1;
     params.dynamic_rho = FLAGS_dynamic_rho;
-    params.alpha = FLAGS_alpha;
-    params.use_supernodal_solver = FLAGS_use_supernodal;
+    params.rho = FLAGS_rho;
     params.verbosity_level = FLAGS_verbosity_level;
+    params.max_iterations = FLAGS_max_iterations;
     params.log_stats = true;
+    params.do_max_iterations = FLAGS_do_max_iterations;
+    params.soft_tolerance = FLAGS_soft_tolerance;
+    params.alpha = FLAGS_alpha;
+    params.rho_factor = FLAGS_rho_factor;
+    params.write_star = FLAGS_write_star;
     admm_solver->set_parameters(params);
 
   }
@@ -591,7 +599,9 @@ int do_main() {
         if (point_pair_info.bodyB_index() == body_index){
           forces[j] += point_pair_info.contact_force();
         } else if (point_pair_info.bodyA_index() == body_index) {
-          forces[j] -= point_pair_info.contact_force();
+          if (j != 0){
+            forces[j] -= point_pair_info.contact_force();
+          }
         }
       }
     }

@@ -26,7 +26,7 @@ drake_cc_binary(
         "//multibody/plant:contact_results_to_lcm",
         "//multibody/plant:compliant_contact_computation_manager",
         "//multibody/contact_solvers:unconstrained_primal_solver",   
-	"//multibody/contact_solvers:admm_solver",      
+	    "//multibody/contact_solvers:admm_solver",      
         "//systems/analysis:simulator",
         "//systems/analysis:simulator_gflags",
         "//systems/framework:diagram",

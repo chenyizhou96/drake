@@ -69,6 +69,8 @@ struct AdmmSolverParameters {
   bool use_stiction_guess{false};
 
   double alpha{1.0};   //over relaxation parameter
+
+  bool write_star{false};  //variable only for writing lyaponuv function
 };
 
 struct AdmmSolverIterationMetrics {

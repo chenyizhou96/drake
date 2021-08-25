@@ -347,10 +347,10 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   //Only for calculating lyaponov function:
   VectorX<double> z_tilde_star;
   VectorX<double> u_tilde_star;
-  if (parameters_.do_max_iterations) {
-    z_tilde_star = load_csv<VectorX<double>>("z_tilde_star.csv");
-    u_tilde_star = load_csv<VectorX<double>>("u_tilde_star.csv");
-  }
+  
+  z_tilde_star = load_csv<VectorX<double>>("z_tilde_star.csv");
+  u_tilde_star = load_csv<VectorX<double>>("u_tilde_star.csv");
+  
 
   // Start Newton iterations.
   int k = 0;
@@ -401,27 +401,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     //step to solve for sigma_tilde:
     VectorX<double> rhs = rho*(state.z_tilde()-state.u_tilde())-r_tilde;
     state.mutable_sigma_tilde() = solver->Solve(rhs);
-
-
-    //debugging code for the linear system:
-    // VectorX<double> temp1(nv);
-    // J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
-    // VectorX<double> temp2(nv);
-    // //PRINT_VAR(temp1);
-    // M_inverse.Multiply(temp1, &temp2);
-    // //PRINT_VAR(temp2);
-    // J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
-    // VectorX<double> lhs = cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde()) +rho*state.sigma_tilde();
-    // double residue = (lhs - rhs).norm()/max(rhs.norm(),lhs.norm());
-    // if (k == 0 && parameters_.use_stiction_guess){
-    //   double initial_residue = (cache.delta_v_c_tilde+ R_tilde.cwiseProduct(state.sigma_tilde())+
-    //                                 r_tilde).norm()/max(rhs.norm(),lhs.norm());
-    //   PRINT_VAR(initial_residue);
-    //   DRAKE_DEMAND(initial_residue < 1.0E-14);
-    // } else {
-    //   //PRINT_VAR(residue);
-    //   //DRAKE_DEMAND(residue < 1.0E-14);
-    // }
     
     
     z_tilde_old = state.z_tilde();
@@ -453,7 +432,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
         PRINT_VAR(state.sigma_tilde());
         PRINT_VAR(mu);
         PRINT_VAR(data_.D);
-        //SaveVector("z_tilde_big.csv", state.z_tilde());
       }
     }
 
@@ -490,32 +468,6 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     stats_.iteration_metrics.back().V = pow((state.u_tilde() - u_tilde_star).norm(), 2)
                                         + rho* pow((state.z_tilde() - z_tilde_star).norm(), 2);
 
-    // double uz_product = state.u_tilde().dot(state.z_tilde());
-    // VectorX<double> N_tilde_sigma_tilde = lhs-rho*state.sigma_tilde();
-    // double l =  r_tilde.dot(r_tilde);
-    // uz_product /= l;
-    //IMPORTANT: uz_product is machine epsilon if soft_tolerance is machine epsilon
-
-    //DRAKE_DEMAND(uz_product < 1.0E-13);
-
-
-    // if (parameters_.verbosity_level >=4) {
-    //   const auto& y_tilde = rho* state.u_tilde();
-    //   const auto& R_sqrt = data_.R.cwiseSqrt();
-    //   double s_norm = R_sqrt.cwiseProduct(Dinv_sqrt.cwiseProduct(R_sqrt.cwiseProduct(y_tilde))
-    //                                   +state.sigma_tilde()).norm();
-    //   if (false) {
-    //     PRINT_VAR(k);
-    //     PRINT_VAR(state.z_tilde());
-    //     PRINT_VAR(state.u_tilde());
-    //   }
-    // }
-
-    // VectorX<double> temp1(nv);
-    // J_tilde_transpose.Multiply(state.sigma_tilde(), &temp1);
-    // VectorX<double> temp2(nv);
-    // M_inverse.Multiply(temp1, &temp2);
-    // J_tilde_transpose.MultiplyByTranspose(temp2, &mutable_cache.delta_v_c_tilde);
     mutable_cache.delta_v_c = D_sqrt.cwiseProduct(cache.delta_v_c_tilde);
     
     bool converged =
@@ -540,10 +492,15 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   if (k == parameters_.max_iterations) {
     stats_history_.push_back(stats_);
     this -> LogFailureData("failure_log.dat");
-    //SaveVector("z_tilde_star.csv", state.z_tilde());
-    //SaveVector("u_tilde_star.csv", state.u_tilde());
+    if (parameters_.write_star) {
+      SaveVector("z_tilde_star.csv", state.z_tilde());
+      SaveVector("u_tilde_star.csv", state.u_tilde());
+    }
   }
-  
+
+  if (parameters_.do_max_iterations && k ==parameters_.max_iterations) {
+      k -=1;
+    }
 
   if (k == parameters_.max_iterations) return ContactSolverStatus::kFailure;
   
@@ -627,7 +584,7 @@ bool AdmmSolver<T>::CheckConvergenceCriteria( const VectorX<T>& sigma_tilde,
 
   // //dynamic rho code:
   if (parameters_.dynamic_rho) {
-    if (r_norm > r_s_ratio* s_norm && rho < 500) {
+    if (r_norm > r_s_ratio* s_norm && rho < 1000) {
       rho *= rho_factor;
       *u_tilde = *u_tilde/rho_factor;
       rho_changed = true;
@@ -738,11 +695,11 @@ void AdmmSolver<T>::LogOneTimestepHistory(
   const auto& stats = stats_hist[step-1];
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
       //error metrics
       "r_norm", "s_norm", "bound",
       //parameters
-      "rho", "num_rho_changed",
+      "rho", "num_rho_changed", "V",
       //variable data:
       "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
       "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
@@ -754,11 +711,11 @@ void AdmmSolver<T>::LogOneTimestepHistory(
       );
   for (const auto& metrics:stats.iteration_metrics) {
     file << fmt::format(
-    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
     // Error metrics.
     metrics.r_norm_l2,
     metrics.s_norm_l2, metrics.bound,
-    metrics.rho, parameters_.num_rho_changed,
+    metrics.rho, parameters_.num_rho_changed,metrics.V,
     metrics.v_tilde[0], metrics.v_tilde[1], metrics.v_tilde[2],
     metrics.v_tilde[3], metrics.v_tilde[4], metrics.v_tilde[5],
     metrics.sigma_tilde[0], metrics.sigma_tilde[1], metrics.sigma_tilde[2],
