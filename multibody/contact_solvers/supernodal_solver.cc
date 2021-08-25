@@ -162,8 +162,8 @@ inline std::vector<std::vector<MatrixXd>> GetRowData(
       SortClique(&column.at(index), &y.at(index));
     }
     if (column.at(index).size() > 2) {
-      throw std::runtime_error(
-          "Jacobian can only be nonzero on at most two column blocks.");
+      //throw std::runtime_error(
+          //"Jacobian can only be nonzero on at most two column blocks.");
     }
   }
   return y;

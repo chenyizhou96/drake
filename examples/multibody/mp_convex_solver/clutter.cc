@@ -107,6 +107,7 @@ DEFINE_bool(do_max_iterations, false, "whether to use max iterations for admm so
 DEFINE_double(rho, 1.0, "Initial value of rho.");
 DEFINE_double(soft_tolerance, 1.0E-7, "soft tolerance for the projection in admm solver");
 DEFINE_bool(write_star, false, "set true if to compute lyaponov function for admm");
+DEFINE_double(rho_factor, 2.0, "factor to increase rho in admm");
 
 using drake::math::RigidTransform;
 using drake::math::RigidTransformd;
@@ -531,6 +532,7 @@ int do_main() {
     params.do_max_iterations = FLAGS_do_max_iterations;
     params.soft_tolerance = FLAGS_soft_tolerance;
     params.alpha = FLAGS_alpha;
+    params.rho_factor = FLAGS_rho_factor;
     params.write_star = FLAGS_write_star;
     admm_solver->set_parameters(params);
 
