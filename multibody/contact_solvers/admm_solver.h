@@ -333,9 +333,6 @@ class AdmmSolver final : public ConvexSolverBase<T> {
   void InitializeSolveForSigmaTildeData(const State& s, conex::SuperNodalSolver* solver) const;
 
 
-  //calculate G = rho(D+rhoR)^-1, used in the SetWeightMatrix of supernodal solver
-  void CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, const double& rho, std::vector<MatrixX<T>>* G) const;
-
   bool CheckConvergenceCriteria(const VectorX<T>& sigma_tilde, 
                         const VectorX<T>& z_tilde, const VectorX<T>& z_tilde_old, 
                         const VectorX<T>& delta_v_c, VectorX<T>* u_tilde); 

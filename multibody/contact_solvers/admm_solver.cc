@@ -631,21 +631,6 @@ void AdmmSolver<T>::CalcSlope(const VectorX<T>& u, VectorX<T>* slope) const{
   }
 }
 
-//matrix G = rhoD(D+ rho R)^-1, used for the weight matrix in the supernodal solver 
-template <typename T>
-void AdmmSolver<T>::CalcGMatrix(const VectorX<T>& D, const VectorX<T>& R, 
-      const double& rho, std::vector<MatrixX<T>>* G) const{
-
-  const int& nc = data_.nc;
-  
-  for (int ic = 0, ic3 = 0; ic < nc; ic++, ic3 += 3) {
-    const auto& R_ic = R.template segment<3>(ic3);
-    const auto& D_ic = D.template segment<3>(ic3);
-    //const Vector3<T> Rinv = R_ic.cwiseInverse();
-    MatrixX<T>& G_ic = (*G)[ic];
-    G_ic = rho * (D_ic.cwiseProduct((D_ic+rho*R_ic).cwiseInverse()).asDiagonal());
-  }
-}
 
 template <typename T>
 void AdmmSolver<T>::InitializeSolveForSigmaTildeData(const State& s, conex::SuperNodalSolver* solver) const {
