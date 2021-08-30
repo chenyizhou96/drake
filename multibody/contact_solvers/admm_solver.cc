@@ -107,7 +107,6 @@ void AdmmSolver<T>::InitializeD(const int& nc, const std::vector<MatrixX<T>>& Mt
       }
     }
   }
-
  
   if (parameters_.verbosity_level >= 3) {
     PRINT_VAR(*D);
@@ -248,6 +247,7 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
   const auto& D_sqrt = data_.D_sqrt;
   const auto& rho = parameters_.rho;
   const auto& vc_stab = data_.vc_stab;
+  const auto& Dinv = data_.Dinv;
 
   //each entry of D must be positive
   DRAKE_DEMAND(D.minCoeff() > 0);
@@ -288,6 +288,23 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     }
     PRINT_VAR(r_tilde);
     PRINT_VAR(v_star);
+  }
+
+  if (parameters_.verbosity_level >= 2) {
+    std::vector<int> ps(0), ts(0);
+    for (const auto& [p, t, Jb] :J_tilde_transpose.get_blocks()) {
+      std::cout << fmt::format("(p,t) = ({:d},{:d}). {:d}x{:d}.\n", p, t,
+                               Jb.rows(), Jb.cols());
+      ps.emplace_back(p);
+      ts.emplace_back(t);
+    }
+    for (int i = 0; i < ps.size(); i++ ) {
+      for (int j = i + 1; j < ps.size(); j++) {
+        if (ps[i] == ps[j]) {
+          DRAKE_DEMAND(ts[i] < ts[j]);
+        }
+      }
+    }
   }
 
 

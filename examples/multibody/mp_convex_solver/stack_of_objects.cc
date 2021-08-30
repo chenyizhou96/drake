@@ -522,6 +522,8 @@ int do_main() {
     params.rho = FLAGS_rho;
     params.verbosity_level = FLAGS_verbosity_level;
     params.max_iterations = FLAGS_max_iterations;
+    params.abs_tolerance = FLAGS_abs_tol;
+    params.rel_tolerance = FLAGS_rel_tol;
     params.log_stats = true;
     params.do_max_iterations = FLAGS_do_max_iterations;
     params.soft_tolerance = FLAGS_soft_tolerance;
