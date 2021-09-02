@@ -534,7 +534,15 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
     PRINT_VAR(sigma);
     PRINT_VAR(vc_stab);
   }
-
+  //quadratic cose = 0.5*sigma^T( v_c - v_hat + R sigma)+ 0.5* sigma^T(J v_star - v_hat)
+  VectorX<double> Mdv(nv);
+  data_.Mblock.Multiply(v-v_star, &Mdv);
+  double cost = 0.5* sigma.dot(data_.R.cwiseProduct(sigma)) + 0.5*(v-v_star).dot(Mdv); 
+  stats_.iteration_metrics.back().cost = cost;
+  stats_.iteration_metrics.back().opt_cond = this->CalcOptimalityCondition(data_, v, sigma)/cost;
+  VectorX<double> Mv(nv);
+  data_.Mblock.Multiply(v, & Mv);
+  stats_.iteration_metrics.back().k_e = 0.5* v.dot(Mv);
   //  auto& last_metrics = stats_.iteration_metrics.back();
   // last_metrics.r_norm_l2 = (const_cache.g- const_cache.z).norm();
   // last_metrics.s_norm_l2 = R.cwiseProduct(rho*const_cache.u+state.sigma()).norm();
@@ -542,6 +550,10 @@ ContactSolverStatus AdmmSolver<double>::DoSolveWithGuess(
 
   // if (!parameters_.log_stats) stats_.iteration_metrics.push_back(metrics);
   stats_.num_iters = stats_.iteration_metrics.size();
+  auto& last_metrics =
+      parameters_.log_stats ? stats_.iteration_metrics.back() : metrics;
+  std::tie(last_metrics.mom_rel_l2, last_metrics.mom_rel_max) =
+      this->CalcRelativeMomentumError(data,v, sigma);
 
   PackContactResults(data_,v,vc, sigma, results);
   // stats_.total_time = global_timer.Elapsed();
@@ -772,7 +784,7 @@ void AdmmSolver<T>::LogIterationsHistory(
   }
   std::ofstream file(file_name);
   file << fmt::format(
-      "{} {} {} {} {} {} {} {} {} {}\n",
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
@@ -780,7 +792,9 @@ void AdmmSolver<T>::LogIterationsHistory(
       //parameters
       "rho", "num_rho_changed",
       //error metrics
-      "r_norm", "s_norm",
+      "r_norm", "s_norm", "mom_rel_l2",
+      //optimality metric
+      "opt_cond", "cost", "k_e",
       //norms:
       "v_tilde_norm", "sigma_tilde_norm", "z_tilde_norm", "u_tilde_norm"
       //variable data:
@@ -801,7 +815,7 @@ void AdmmSolver<T>::LogIterationsHistory(
     // Compute some totals and averages.
 
     file << fmt::format(
-        "{} {} {} {} {} {} {} {} {} {}\n",
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
@@ -811,7 +825,9 @@ void AdmmSolver<T>::LogIterationsHistory(
         parameters_.num_rho_changed,
         // Error metrics.
         metrics.r_norm_l2,
-        metrics.s_norm_l2,
+        metrics.s_norm_l2, metrics.mom_rel_l2,
+        //optimality metrric
+        metrics.opt_cond, metrics.cost, metrics.k_e,
         //norms:
         metrics_0.v_tilde_norm, metrics_0.sigma_tilde_norm, metrics_0.z_tilde_norm, metrics_0.u_tilde_norm
         //initialization related:

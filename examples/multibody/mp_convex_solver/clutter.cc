@@ -523,11 +523,13 @@ int do_main() {
     // N.B. These lines to set solver parameters are only needed if you want to
     // experiment with these values. Default values should work ok for most
     // applications. Thus, for your general case you can omit these lines.
-    AdmmSolverParameters params;
+     AdmmSolverParameters params;
     params.dynamic_rho = FLAGS_dynamic_rho;
     params.rho = FLAGS_rho;
     params.verbosity_level = FLAGS_verbosity_level;
     params.max_iterations = FLAGS_max_iterations;
+    params.abs_tolerance = FLAGS_abs_tol;
+    params.rel_tolerance = FLAGS_rel_tol;
     params.log_stats = true;
     params.do_max_iterations = FLAGS_do_max_iterations;
     params.soft_tolerance = FLAGS_soft_tolerance;

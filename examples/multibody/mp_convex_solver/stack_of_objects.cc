@@ -19,6 +19,7 @@
 #include "drake/math/rotation_matrix.h"
 #include "drake/multibody/contact_solvers/unconstrained_primal_solver.h"
 #include "drake/multibody/contact_solvers/admm_solver.h"
+#include "drake/multibody/contact_solvers/pgs_solver.h"
 #include "drake/multibody/plant/compliant_contact_computation_manager.h"
 #include "drake/multibody/plant/contact_results_to_lcm.h"
 #include "drake/systems/analysis/implicit_integrator.h"
@@ -131,6 +132,11 @@ using drake::multibody::contact_solvers::internal::
     AdmmSolverParameters;
 using drake::multibody::contact_solvers::internal::
     AdmmSolverStats;
+using drake::multibody::contact_solvers::internal::PgsSolver;
+using drake::multibody::contact_solvers::internal::
+    PgsSolverParameters;
+using drake::multibody::contact_solvers::internal::
+    PgsSolverStats;
 using Eigen::Translation3d;
 using Eigen::Vector3d;
 using clock = std::chrono::steady_clock;
@@ -471,6 +477,7 @@ int do_main() {
 
   UnconstrainedPrimalSolver<double>* primal_solver{nullptr};
   AdmmSolver<double>* admm_solver{nullptr};
+  PgsSolver<double>* pgs_solver{nullptr};
   CompliantContactComputationManager<double>* manager{nullptr};
   if (FLAGS_solver_type == 1) {
     auto owned_manager =
@@ -531,6 +538,22 @@ int do_main() {
     params.rho_factor = FLAGS_rho_factor;
     params.write_star = FLAGS_write_star;
     admm_solver->set_parameters(params);
+
+  }
+
+  if (FLAGS_solver_type == -1) {
+    auto owned_manager =
+        std::make_unique<CompliantContactComputationManager<double>>();
+    manager = owned_manager.get();
+    plant.SetDiscreteUpdateManager(std::move(owned_manager));
+    manager->set_contact_solver(std::make_unique<PgsSolver<double>>());
+    pgs_solver =
+        &manager->mutable_contact_solver<PgsSolver>();
+
+    PgsSolverParameters params;
+    params.max_iterations = FLAGS_max_iterations;
+    pgs_solver->set_parameters(params);
+
 
   }
 
@@ -658,6 +681,9 @@ int do_main() {
       admm_solver->LogIterationsHistory("log.dat");
       admm_solver->LogOneTimestepHistory("one_step_log.dat",FLAGS_log_step);
     }
+    // if (pgs_solver) {
+    //   pgs_solver->LogIterationsHistory("log.dat");
+    // }
     // primal_solver->LogSolutionHistory("sol_hist.dat");
   }
 

@@ -90,7 +90,9 @@ struct AdmmSolverIterationMetrics {
   double rho{0.0};
 
   double V{0.0};    //lyaponov function
-
+  double opt_cond {0.0}; // for optimality conditions
+  double cost{0.0};
+  double k_e{0.0};  //kinetic energy
 
   //For debuggin  purpose only, delete later
   VectorX<double> v_tilde;

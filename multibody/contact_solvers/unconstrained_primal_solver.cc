@@ -251,7 +251,11 @@ ContactSolverStatus UnconstrainedPrimalSolver<double>::DoSolveWithGuess(
       this->CalcRelativeMomentumError(data, state.v(), cache.gamma);
   if (!parameters_.log_stats) stats_.iteration_metrics.push_back(metrics);
   stats_.num_iters = stats_.iteration_metrics.size();
-
+  
+  VectorX<double> Mv(nv);
+  data_.Mblock.Multiply(state.v(), &Mv);
+  last_metrics.k_e = 0.5* state.v().dot(Mv);
+  
   PackContactResults(data_, state.v(), cache.vc, cache.gamma, results);
   stats_.total_time = global_timer.Elapsed();
 
@@ -701,7 +705,7 @@ UnconstrainedPrimalSolver<T>::CalcIterationMetrics(const State& s,
   metrics.ls_iters = num_ls_iterations;
   metrics.ls_alpha = alpha;
   metrics.rcond = s.cache().condition_number;
-  metrics.opt_cond = this->CalcOptimalityCondition(data_, s.v(), cache.gamma);
+  metrics.opt_cond = this->CalcOptimalityCondition(data_, s.v(), cache.gamma)/metrics.ell;
   metrics.gamma_norm = cache.gamma.norm();
   metrics.vc_norm = cache.vc.norm();
 
@@ -796,11 +800,11 @@ void UnconstrainedPrimalSolver<T>::LogIterationsHistory(
   std::ofstream file(file_name);
   file << fmt::format(
       "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} "
-      "{} {} {} {}\n",
+      "{} {} {} {} {}\n",
       // Problem size.
       "num_contacts",
       // Number of iterations.
-      "num_iters",
+      "num_iters", "k_e",
       // Error metrics.
       "vc_error_max_norm", "v_error_max_norm", "gamma_error_max_norm", "mom_l2",
       "mom_max", "mom_rel_l2", "mom_rel_max","opt_cond",
@@ -836,11 +840,11 @@ void UnconstrainedPrimalSolver<T>::LogIterationsHistory(
 
     file << fmt::format(
         "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} "
-        "{} {} {} {}\n",
+        "{} {} {} {} {}\n",
         // Problem size.
         s.num_contacts,
         // Number of iterations.
-        iters,
+        iters, metrics.k_e,
         // Error metrics.
         metrics.vc_error_max_norm, metrics.v_error_max_norm,
         metrics.gamma_error_max_norm, metrics.mom_l2, metrics.mom_max,

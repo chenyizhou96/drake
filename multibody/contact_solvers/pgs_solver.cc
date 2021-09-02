@@ -155,7 +155,9 @@ void PgsSolver<T>::PreProcessData(const SystemDynamicsData<T>& dynamics_data,
     // Contact velocities when contact forces are zero.
     auto& vc_star = pre_proc_data_.vc_star;
     contact_data.get_Jc().Multiply(v_star, &vc_star);
-
+    
+    const LinearOperator<double>& test = dynamics_data.get_A();
+    test.AssembleMatrix();
     auto& W = pre_proc_data_.W;
     this->FormDelassusOperatorMatrix(contact_data.get_Jc(),
                                      dynamics_data.get_Ainv(),

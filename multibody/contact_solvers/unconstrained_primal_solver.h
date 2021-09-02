@@ -117,6 +117,9 @@ struct UnconstrainedPrimalSolverIterationMetrics {
   double ls_alpha;
 
   int ls_iters{0};
+
+  //kinetic energy
+  double k_e{0.0};
 };
 
 // Intended for debugging only. Remove.

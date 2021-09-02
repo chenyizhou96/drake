@@ -484,6 +484,29 @@ void CompliantContactComputationManager<T>::LogStats(
 
   const std::vector<ContactManagerStats>& hist = get_stats_history();
   std::ofstream file(log_file_name);
+
+  file << fmt::format(
+    "{} {} {} {} {} {} {} {} {} {}\n",
+    // Problem size.
+    "time",
+    // Number of iterations.
+    "num_contacts",
+    //parameters
+    "total_time", "geometry_time",
+    //error metrics
+    "vstar_time", "graph_time",
+    //norms:
+    "linear_dynamics_time", "contact_jacobian_time", "contact_solver_time", "pack_results_time"
+    //variable data:
+    // "v_tilde_0", "v_tilde_1","v_tilde_2","v_tilde_3","v_tilde_4","v_tilde_5",
+    // "sigma_tilde_0", "sigma_tilde_1","sigma_tilde_2","sigma_tilde_3","sigma_tilde_4",
+    // "sigma_tilde_5", "sigma_tilde_6", "sigma_tilde_7", "sigma_tilde_8",
+    // "z_tilde_0", "z_tilde_1","z_tilde_2","z_tilde_3","z_tilde_4",
+    // "z_tilde_5", "z_tilde_6", "z_tilde_7", "z_tilde_8",
+    // "u_tilde_0", "u_tilde_1","u_tilde_2","u_tilde_3","u_tilde_4",
+    // "u_tilde_5", "u_tilde_6", "u_tilde_7", "u_tilde_8"
+  );
+
   for (const auto& s : hist) {
     file << fmt::format(
         "{:18.6g} {:d}  {:18.6g}  {:18.6g} {:18.6g} {:18.6g} {:18.6g} "
